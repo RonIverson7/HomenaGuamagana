@@ -22,6 +22,7 @@ import Header from '../components/Header';
 import { supabase } from "../../supabase/supabaseClient";
 import { useRouter } from "expo-router";
 
+
 const HomeScreen = () => {
   const [selectedImage, setSelectedImage] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
@@ -36,13 +37,16 @@ const HomeScreen = () => {
   const [accessToken, setAccessToken] = useState(null);
   const [refreshToken, setRefreshToken] = useState(null);
 
+
   const [commentModalVisible, setCommentModalVisible] = useState(false);
   const [currentPostComments, setCurrentPostComments] = useState([]);
   const [currentPostId, setCurrentPostId] = useState(null);
   const [newCommentText, setNewCommentText] = useState('');
 
+
   // Profile modal and fields
   const [profileModalVisible, setProfileModalVisible] = useState(false);
+
 
   const [firstName, setFirstName] = useState("");
   const [middleName, setMiddleName] = useState("");
@@ -59,14 +63,18 @@ const HomeScreen = () => {
   const [image, setImage] = useState(null);
   const [backgroundImage, setBackgroundImage] = useState(null);
 
+
   // Temporary unsaved edits
   const [tempImage, setTempImage] = useState(null);
   const [tempBackgroundImage, setTempBackgroundImage] = useState(null);
 
+
   const formattedDate = birthday.toLocaleDateString("en-US");
+
 
   const router = useRouter();
   const API_BASE = "http://192.168.18.22:3000/api";
+
 
   useEffect(() => {
     const init = async () => {
@@ -78,10 +86,11 @@ const HomeScreen = () => {
         setAccessToken(at);
         setRefreshToken(rt);
 
-        // Auto open profile modal if username empty
+
         if (!username) {
           setProfileModalVisible(true);
         }
+
 
         await fetchPosts(at, rt);
       } catch (e) {
@@ -93,11 +102,13 @@ const HomeScreen = () => {
     init();
   }, []);
 
+
   const fetchPosts = async (at = accessToken, rt = refreshToken) => {
     try {
       setLoading(true);
       const session = await supabase.auth.getSession();
       const currentUserId = session?.data?.session?.user?.id;
+
 
       const res = await fetch(`${API_BASE}/homepage/getPost`, {
         method: 'GET',
@@ -107,7 +118,9 @@ const HomeScreen = () => {
       });
       const data = await res.json();
 
+
       setPosts(data.posts || []);
+
 
       const reactCounts = {};
       data.reacts?.forEach(r => {
@@ -115,11 +128,13 @@ const HomeScreen = () => {
       });
       setLikes(reactCounts);
 
+
       const commentCounts = {};
       data.comments?.forEach(c => {
         commentCounts[c.postId] = (commentCounts[c.postId] || 0) + 1;
       });
       setComments(commentCounts);
+
 
       const initialLikes = {};
       data.reacts?.forEach(r => {
@@ -129,12 +144,14 @@ const HomeScreen = () => {
       });
       setUserLikes(initialLikes);
 
+
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
   };
+
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -148,8 +165,10 @@ const HomeScreen = () => {
     }
   };
 
+
   const uploadPost = async () => {
     if (!postText && pickedImages.length === 0) return;
+
 
     const formData = new FormData();
     formData.append("description", postText);
@@ -159,6 +178,7 @@ const HomeScreen = () => {
       const type = match ? `image/${match[1]}` : `image`;
       formData.append("media", { uri, name: filename, type });
     });
+
 
     try {
       setLoading(true);
@@ -182,13 +202,16 @@ const HomeScreen = () => {
     }
   };
 
+
   const handleLike = async (postId) => {
     const alreadyLiked = userLikes[postId] || false;
+
 
     setUserLikes(prev => ({
       ...prev,
       [postId]: !alreadyLiked,
     }));
+
 
     try {
       const res = await fetch(`${API_BASE}/homepage/createReact`, {
@@ -200,6 +223,7 @@ const HomeScreen = () => {
         body: JSON.stringify({ postId }),
       });
 
+
       if (!res.ok) throw new Error(`Failed to react (${res.status})`);
       await fetchPosts();
     } catch (e) {
@@ -210,6 +234,7 @@ const HomeScreen = () => {
       }));
     }
   };
+
 
   const openCommentsModal = async (postId) => {
     try {
@@ -229,8 +254,10 @@ const HomeScreen = () => {
     }
   };
 
+
   const postComment = async () => {
     if (!newCommentText.trim()) return;
+
 
     try {
       await fetch(`${API_BASE}/homepage/createComment`, {
@@ -252,9 +279,11 @@ const HomeScreen = () => {
     }
   };
 
+
   const removeImage = (index) => {
     setPickedImages(prev => prev.filter((_, i) => i !== index));
   };
+
 
   const pickProfileImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -264,10 +293,12 @@ const HomeScreen = () => {
       quality: 1,
     });
 
+
     if (!result.canceled) {
       setTempImage({ uri: result.assets[0].uri });
     }
   };
+
 
   const pickBackgroundImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -277,21 +308,26 @@ const HomeScreen = () => {
       quality: 1,
     });
 
+
     if (!result.canceled) {
       setTempBackgroundImage({ uri: result.assets[0].uri });
     }
   };
+
 
   const handleProfileSave = () => {
     const displayName =
       userNameField || [firstName, middleName, lastName].filter(Boolean).join(" ");
     setUsername(displayName);
 
+
     setImage(tempImage);
     setBackgroundImage(tempBackgroundImage);
 
+
     setProfileModalVisible(false);
   };
+
 
   const onChangeDate = (event, selectedDate) => {
     if (selectedDate) {
@@ -302,6 +338,7 @@ const HomeScreen = () => {
     }
   };
 
+
   const renderPost = ({ item: post }) => (
     <View key={post.id} style={styles.card}>
       <View style={styles.userInfo}>
@@ -309,13 +346,21 @@ const HomeScreen = () => {
         <Text style={styles.username}>{post.user?.name}</Text>
       </View>
 
+
       {!!post.text && <Text style={styles.description}>{post.text}</Text>}
+
 
       {!!post.image && (
         <TouchableOpacity onPress={() => setSelectedImage({ uri: post.image })}>
           <Image source={{ uri: post.image }} style={styles.postImage} resizeMode="cover" />
         </TouchableOpacity>
       )}
+
+
+      {!!post.timestamp && (
+        <Text style={styles.timestamp}>{post.timestamp}</Text>
+      )}
+
 
       <View style={styles.actions}>
         <TouchableOpacity onPress={() => handleLike(post.id)} style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -327,6 +372,7 @@ const HomeScreen = () => {
           <Text style={styles.likeText}>{likes[post.id] || 0}</Text>
         </TouchableOpacity>
 
+
         <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 12 }} onPress={() => openCommentsModal(post.id)}>
           <Feather name="message-circle" size={20} color="#555" />
           <Text style={{ marginLeft: 4 }}>{comments[post.id] || 0}</Text>
@@ -335,16 +381,35 @@ const HomeScreen = () => {
     </View>
   );
 
+  // Updated render function for comments to include timestamp below each comment
+  const renderComment = ({ item }) => (
+    <View style={styles.commentBox}>
+      <Image source={{ uri: item.user?.avatar }} style={styles.avatar} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontWeight: 'bold' }}>{item.user?.name}</Text>
+        <Text>{item.text}</Text>
+        {/* Show comment timestamp below comment text */}
+        {!!item.timestamp && (
+          <Text style={styles.commentTimestamp}>{item.timestamp}</Text>
+        )}
+      </View>
+    </View>
+  );
+
+
   return (
     <SafeAreaView style={styles.container}>
       <Header title="HOME" showSearch={true} />
 
+
       {error && <Text style={{ color: 'red', margin: 10 }}>{error}</Text>}
+
 
       <TouchableOpacity style={styles.postOverlayBox} onPress={() => setModalVisible(true)}>
         <Ionicons name="create-outline" size={24} color="#555" style={{ marginRight: 8 }} />
         <Text style={{ color: '#555' }}>What's on your mind?</Text>
       </TouchableOpacity>
+
 
       <FlatList
         data={posts}
@@ -354,12 +419,14 @@ const HomeScreen = () => {
         ListEmptyComponent={loading ? <Text style={{ margin: 12 }}>Loading...</Text> : null}
       />
 
+
       {/* Image fullscreen modal */}
       <Modal visible={selectedImage !== null} transparent animationType="fade">
         <TouchableOpacity style={styles.fullScreenContainer} onPress={() => setSelectedImage(null)}>
           <Image source={selectedImage} style={styles.fullScreenImage} resizeMode="contain" />
         </TouchableOpacity>
       </Modal>
+
 
       {/* Create Post modal */}
       <Modal visible={modalVisible} transparent animationType="fade">
@@ -379,6 +446,7 @@ const HomeScreen = () => {
                     multiline
                   />
                 </View>
+
 
                 <FlatList
                   horizontal
@@ -401,6 +469,7 @@ const HomeScreen = () => {
                   }
                 />
 
+
                 <TouchableOpacity style={styles.postButton} onPress={uploadPost}>
                   <Text style={styles.postButtonText}>Post</Text>
                 </TouchableOpacity>
@@ -409,6 +478,7 @@ const HomeScreen = () => {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
 
       {/* Comments Modal */}
       <Modal visible={commentModalVisible} animationType="slide">
@@ -422,15 +492,7 @@ const HomeScreen = () => {
           <FlatList
             data={currentPostComments}
             keyExtractor={(item) => item.id.toString()}
-            renderItem={({ item }) => (
-              <View style={styles.commentBox}>
-                <Image source={{ uri: item.user?.avatar }} style={styles.avatar} />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: 'bold' }}>{item.user?.name}</Text>
-                  <Text>{item.text}</Text>
-                </View>
-              </View>
-            )}
+            renderItem={renderComment} 
           />
           <View style={styles.commentInputContainer}>
             <TextInput
@@ -446,6 +508,7 @@ const HomeScreen = () => {
         </SafeAreaView>
       </Modal>
 
+
       {/* Complete Your Profile Modal */}
       <Modal visible={profileModalVisible} animationType="fade" transparent>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
@@ -460,6 +523,7 @@ const HomeScreen = () => {
               >
                 <Text style={styles.modalTitle}>Complete Your Profile</Text>
 
+
                 <TouchableOpacity onPress={pickProfileImage} style={styles.imagePicker}>
                   {tempImage ? (
                     <Image source={tempImage} style={styles.avatarEdit} />
@@ -470,6 +534,7 @@ const HomeScreen = () => {
                   )}
                   <Text style={styles.changePhotoText}>Change Profile Photo</Text>
                 </TouchableOpacity>
+
 
                 <TouchableOpacity onPress={pickBackgroundImage} style={styles.imagePicker}>
                   <View style={styles.backgroundPreviewContainer}>
@@ -483,6 +548,7 @@ const HomeScreen = () => {
                   </View>
                   <Text style={styles.changePhotoText}>Change Background Photo</Text>
                 </TouchableOpacity>
+
 
                 <TextInput
                   style={styles.input}
@@ -506,6 +572,7 @@ const HomeScreen = () => {
                   onChangeText={setLastName}
                 />
 
+
                 <TextInput
                   style={styles.input}
                   placeholder="Username"
@@ -513,6 +580,7 @@ const HomeScreen = () => {
                   value={userNameField}
                   onChangeText={setUserNameField}
                 />
+
 
                 <View style={styles.inputContainer}>
                   <TouchableOpacity
@@ -530,6 +598,7 @@ const HomeScreen = () => {
                       style={{ position: "absolute", right: 10, top: 12 }}
                     />
                   </TouchableOpacity>
+
 
                   {showGenderDropdown && (
                     <View style={styles.dropdownList}>
@@ -549,6 +618,7 @@ const HomeScreen = () => {
                   )}
                 </View>
 
+
                 <TouchableOpacity
                   style={styles.input}
                   onPress={() => setShowDatePicker(true)}
@@ -560,6 +630,7 @@ const HomeScreen = () => {
                   </Text>
                 </TouchableOpacity>
 
+
                 {showDatePicker && (
                   <DateTimePicker
                     value={birthday}
@@ -568,6 +639,7 @@ const HomeScreen = () => {
                     onChange={onChangeDate}
                   />
                 )}
+
 
                 <TextInput
                   style={styles.input}
@@ -592,6 +664,7 @@ const HomeScreen = () => {
                   onChangeText={setAbout}
                 />
 
+
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
                     style={styles.cancelButton}
@@ -611,6 +684,7 @@ const HomeScreen = () => {
     </SafeAreaView>
   );
 };
+
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
@@ -691,6 +765,12 @@ const styles = StyleSheet.create({
   userInfo: { flexDirection: 'row', alignItems: 'center', marginBottom: 5 },
   username: { fontWeight: 'bold' },
   description: { marginBottom: 8 },
+  timestamp: {
+    color: '#999',
+    fontSize: 12,
+    marginTop: 4,
+    marginBottom: 4,
+  },
   postImage: { width: '100%', height: 180, borderRadius: 8, marginBottom: 10 },
   actions: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   likeContainer: { flexDirection: 'row', alignItems: 'center', marginRight: 12 },
@@ -698,9 +778,15 @@ const styles = StyleSheet.create({
   fullScreenContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
   fullScreenImage: { width: '100%', height: '100%' },
   commentBox: { flexDirection: 'row', padding: 10, borderBottomWidth: 1, borderColor: '#eee' },
+  commentTimestamp: {
+    fontSize: 10,
+    color: '#999',
+    marginTop: 2,
+  },
   commentInputContainer: { flexDirection: 'row', padding: 10, borderTopWidth: 1, borderColor: '#eee' },
   commentInput: { flex: 1, backgroundColor: '#f0f2f5', borderRadius: 20, paddingHorizontal: 12 },
   sendButton: { backgroundColor: 'black', borderRadius: 20, padding: 10, marginLeft: 8 },
+
 
   modalOverlay: {
     flex: 1,
@@ -805,5 +891,6 @@ const styles = StyleSheet.create({
     height: "100%",
   },
 });
+
 
 export default HomeScreen;
