@@ -53,10 +53,10 @@ const HomeScreen = () => {
   const [lastName, setLastName] = useState("");
   const [userNameField, setUserNameField] = useState("");
   const [username, setUsername] = useState("");
-  const [gender, setGender] = useState("");
+  const [sex, setSex] = useState("");
   const [birthday, setBirthday] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [showGenderDropdown, setShowGenderDropdown] = useState(false);
+  const [showSexDropdown, setShowSexDropdown] = useState(false);
   const [address, setAddress] = useState("");
   const [bio, setBio] = useState("");
   const [about, setAbout] = useState("");
@@ -76,6 +76,52 @@ const HomeScreen = () => {
   const API_BASE = "http://192.168.18.22:3000/api";
 
 
+  // Fetch user profile from backend to determine if profile modal should show
+  const fetchUserProfile = async (at, rt) => {
+    try {
+      const res = await fetch(`${API_BASE}/profile/getProfile`, {
+        method: "GET",
+        headers: {
+          'Cookie': `access_token=${at}; refresh_token=${rt}`,
+        },
+      });
+      const data = await res.json();
+
+
+      if (data?.profile) {
+        const p = data.profile;
+        setFirstName(p.firstName || "");
+        setMiddleName(p.middleName || "");
+        setLastName(p.lastName || "");
+        setUserNameField(p.username || "");
+        setUsername(p.username || "");
+        setSex(p.gender || "");
+        setAddress(p.address || "");
+        setBio(p.bio || "");
+        setAbout(p.about || "");
+        if (p.birthday) setBirthday(new Date(p.birthday));
+        if (p.avatar) setImage({ uri: p.avatar });
+        if (p.cover) setBackgroundImage({ uri: p.cover });
+
+
+        // Only show modal if profile is incomplete (you can tweak the fields checked)
+        if (!p.username || !p.firstName || !p.lastName) {
+          setProfileModalVisible(true);
+        } else {
+          setProfileModalVisible(false);
+        }
+      } else {
+        // No profile data found - require completion
+        setProfileModalVisible(true);
+      }
+    } catch (err) {
+      console.log("fetchUserProfile error:", err?.message || err);
+      // If error occurs, be conservative and show the modal so user can complete profile
+      setProfileModalVisible(true);
+    }
+  };
+
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -87,12 +133,14 @@ const HomeScreen = () => {
         setRefreshToken(rt);
 
 
-        if (!username) {
-          setProfileModalVisible(true);
+        if (at && rt) {
+          // Check profile completeness before deciding to show modal
+          await fetchUserProfile(at, rt);
+          await fetchPosts(at, rt);
+        } else {
+          // no session tokens - still fetch posts (may be public) or skip
+          await fetchPosts(at, rt);
         }
-
-
-        await fetchPosts(at, rt);
       } catch (e) {
         setError(e.message || "Failed to initialize session");
       } finally {
@@ -185,7 +233,7 @@ const HomeScreen = () => {
       const res = await fetch(`${API_BASE}/homepage/createPost`, {
         method: "POST",
         headers: {
-          "Content-Type": "multipart/form-data",
+          // NOTE: do not set Content-Type manually with FormData in fetch; leaving it as-is is fine for RN fetch
           'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
         },
         body: formData,
@@ -318,7 +366,8 @@ const HomeScreen = () => {
   const saveProfileToDB = async () => {
     try {
       const formData = new FormData();
-  
+
+
       if (tempImage) {
         const filename = tempImage.uri.split("/").pop();
         const match = /\.(\w+)$/.exec(filename);
@@ -329,7 +378,8 @@ const HomeScreen = () => {
           type,
         });
       }
-  
+
+
       if (tempBackgroundImage) {
         const filename = tempBackgroundImage.uri.split("/").pop();
         const match = /\.(\w+)$/.exec(filename);
@@ -340,49 +390,63 @@ const HomeScreen = () => {
           type,
         });
       }
-  
+
+
       formData.append("firstName", firstName);
       formData.append("middleName", middleName);
       formData.append("lastName", lastName);
       formData.append("username", userNameField || username);
-      formData.append("gender", gender);
+      formData.append("gender", sex);
       formData.append("birthday", birthday.toISOString());
       formData.append("address", address);
       formData.append("bio", bio);
       formData.append("about", about);
-  
+
+
       const res = await fetch(`${API_BASE}/profile/updateProfile`, {
         method: "POST",
         headers: {
           'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
-          "Content-Type": "multipart/form-data",
         },
         body: formData,
       });
-  
+
+
       if (!res.ok) throw new Error("Failed to save profile");
-  
+
+
       alert("Profile saved successfully ");
-  
+      return true;
     } catch (err) {
       console.error(err);
       alert("Failed to save profile ");
+      return false;
     }
   };
-  
+
+
   const handleProfileSave = async () => {
     const displayName =
       userNameField || [firstName, middleName, lastName].filter(Boolean).join(" ");
     setUsername(displayName);
-  
+
+
     setImage(tempImage);
     setBackgroundImage(tempBackgroundImage);
-  
-    await saveProfileToDB();
-  
-    setProfileModalVisible(false);
+
+
+    // Save to DB, then refresh profile from server to ensure completeness flag is accurate
+    const saved = await saveProfileToDB();
+
+
+    if (saved) {
+      // refresh local profile state based on backend response
+      await fetchUserProfile(accessToken, refreshToken);
+      // if profile is complete fetchUserProfile will setProfileModalVisible(false)
+      // but ensure it's closed here as well for immediate UX
+      setProfileModalVisible(false);
+    }
   };
-  
 
 
   const onChangeDate = (event, selectedDate) => {
@@ -436,6 +500,7 @@ const HomeScreen = () => {
       </View>
     </View>
   );
+
 
   // Updated render function for comments to include timestamp below each comment
   const renderComment = ({ item }) => (
@@ -548,7 +613,7 @@ const HomeScreen = () => {
           <FlatList
             data={currentPostComments}
             keyExtractor={(item) => item.id.toString()}
-            renderItem={renderComment} 
+            renderItem={renderComment}
           />
           <View style={styles.commentInputContainer}>
             <TextInput
@@ -641,14 +706,14 @@ const HomeScreen = () => {
                 <View style={styles.inputContainer}>
                   <TouchableOpacity
                     style={styles.input}
-                    onPress={() => setShowGenderDropdown(!showGenderDropdown)}
+                    onPress={() => setShowSexDropdown(!showSexDropdown)}
                     activeOpacity={0.8}
                   >
-                    <Text style={{ color: gender ? "#000" : "#999" }}>
-                      {gender || "Select Sex"}
+                    <Text style={{ color: sex ? "#000" : "#999" }}>
+                      {sex || "Select Sex"}
                     </Text>
                     <Ionicons
-                      name={showGenderDropdown ? "chevron-up" : "chevron-down"}
+                      name={showSexDropdown ? "chevron-up" : "chevron-down"}
                       size={20}
                       color="#555"
                       style={{ position: "absolute", right: 10, top: 12 }}
@@ -656,15 +721,15 @@ const HomeScreen = () => {
                   </TouchableOpacity>
 
 
-                  {showGenderDropdown && (
+                  {showSexDropdown && (
                     <View style={styles.dropdownList}>
                       {["Male", "Female", "Others"].map((item) => (
                         <TouchableOpacity
                           key={item}
                           style={styles.dropdownItem}
                           onPress={() => {
-                            setGender(item);
-                            setShowGenderDropdown(false);
+                            setSex(item);
+                            setShowSexDropdown(false);
                           }}
                         >
                           <Text style={styles.dropdownItemText}>{item}</Text>
