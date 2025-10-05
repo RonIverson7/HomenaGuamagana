@@ -315,18 +315,74 @@ const HomeScreen = () => {
   };
 
 
-  const handleProfileSave = () => {
+  const saveProfileToDB = async () => {
+    try {
+      const formData = new FormData();
+  
+      if (tempImage) {
+        const filename = tempImage.uri.split("/").pop();
+        const match = /\.(\w+)$/.exec(filename);
+        const type = match ? `image/${match[1]}` : `image`;
+        formData.append("avatar", {
+          uri: tempImage.uri,
+          name: filename,
+          type,
+        });
+      }
+  
+      if (tempBackgroundImage) {
+        const filename = tempBackgroundImage.uri.split("/").pop();
+        const match = /\.(\w+)$/.exec(filename);
+        const type = match ? `image/${match[1]}` : `image`;
+        formData.append("cover", {
+          uri: tempBackgroundImage.uri,
+          name: filename,
+          type,
+        });
+      }
+  
+      formData.append("firstName", firstName);
+      formData.append("middleName", middleName);
+      formData.append("lastName", lastName);
+      formData.append("username", userNameField || username);
+      formData.append("gender", gender);
+      formData.append("birthday", birthday.toISOString());
+      formData.append("address", address);
+      formData.append("bio", bio);
+      formData.append("about", about);
+  
+      const res = await fetch(`${API_BASE}/profile/updateProfile`, {
+        method: "POST",
+        headers: {
+          'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
+          "Content-Type": "multipart/form-data",
+        },
+        body: formData,
+      });
+  
+      if (!res.ok) throw new Error("Failed to save profile");
+  
+      alert("Profile saved successfully ");
+  
+    } catch (err) {
+      console.error(err);
+      alert("Failed to save profile ");
+    }
+  };
+  
+  const handleProfileSave = async () => {
     const displayName =
       userNameField || [firstName, middleName, lastName].filter(Boolean).join(" ");
     setUsername(displayName);
-
-
+  
     setImage(tempImage);
     setBackgroundImage(tempBackgroundImage);
-
-
+  
+    await saveProfileToDB();
+  
     setProfileModalVisible(false);
   };
+  
 
 
   const onChangeDate = (event, selectedDate) => {
