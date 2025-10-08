@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -15,6 +15,7 @@ import {
 import Header from '../components/Header'; // Import the reusable Header
 import { supabase } from "../../supabase/supabaseClient";
 import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 const API_BASE = "http://192.168.100.83:3000/api";
 
 const ViewEventsScreen = () => {
@@ -23,6 +24,7 @@ const ViewEventsScreen = () => {
   const router = useRouter();
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
+  const scrollRef = useRef(null);
 
   // Ensure Android hardware back goes to Events screen
   useFocusEffect(
@@ -32,6 +34,11 @@ const ViewEventsScreen = () => {
         return true; // consume the event
       };
       const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      // Ensure when this screen is focused, it starts at the top
+      // Delay slightly to allow layout/content to settle
+      setTimeout(() => {
+        scrollRef.current?.scrollTo({ y: 0, animated: false });
+      }, 0);
       return () => sub.remove();
     }, [router])
   );
@@ -81,7 +88,7 @@ const ViewEventsScreen = () => {
           <ActivityIndicator size="large" color="#000" />
         </View>
       ) : (
-        <ScrollView style={styles.scrollView}>
+        <ScrollView ref={scrollRef} style={styles.scrollView}>
           {/* Event Banner */}
           <TouchableOpacity
             style={{ ...styles.bannerContainer, marginTop: 5 }}
@@ -90,8 +97,8 @@ const ViewEventsScreen = () => {
             {event?.image ? (
               <Image source={{ uri: event.image }} style={styles.bannerImage} />
             ) : (
-              <View style={[styles.bannerImage, { justifyContent: 'center', alignItems: 'center' }]}>
-                <Text>No image</Text>
+              <View style={[styles.bannerImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#f2f2f2' }]}>
+                <Ionicons name="image-outline" size={64} color="#9e9e9e" />
               </View>
             )}
           </TouchableOpacity>
@@ -116,7 +123,7 @@ const ViewEventsScreen = () => {
           {/* Activities Section */}
           <View style={styles.activitiesSection}>
             <Text style={styles.activitiesTitle}>
-              <Text>🎨</Text> Activities Include:
+              <Ionicons name="color-palette-outline" size={20} color="#333" />{' '}Activities Include:
             </Text>
             {(Array.isArray(event?.activities) ? event.activities : [])
               .map((act, idx) => (
@@ -127,7 +134,9 @@ const ViewEventsScreen = () => {
           {/* Admission */}
           {(event?.admission || event?.admissionNote) && (
             <View style={styles.textSection}>
-              <Text style={styles.activitiesTitle}>🎟️ Admission</Text>
+              <Text style={styles.activitiesTitle}>
+                <Ionicons name="pricetag-outline" size={20} color="#333" />{' '}Admission
+              </Text>
               {!!event?.admission && (
                 <Text style={styles.description}>{event.admission}</Text>
               )}
@@ -140,7 +149,9 @@ const ViewEventsScreen = () => {
           {/* Venue */}
           {(event?.venueName || event?.venueAddress) && (
             <View style={styles.textSection}>
-              <Text style={styles.activitiesTitle}>📍 Venue</Text>
+              <Text style={styles.activitiesTitle}>
+                <Ionicons name="location-outline" size={20} color="#333" />{' '}Venue
+              </Text>
               {!!event?.venueName && (
                 <Text style={styles.description}>{event.venueName}</Text>
               )}
@@ -153,7 +164,9 @@ const ViewEventsScreen = () => {
           {/* Date & Time */}
           {(event?.startsAt || event?.endsAt) && (
             <View style={styles.textSection}>
-              <Text style={styles.activitiesTitle}>🗓️ Date & Time</Text>
+              <Text style={styles.activitiesTitle}>
+                <Ionicons name="calendar-outline" size={20} color="#333" />{' '}Date & Time
+              </Text>
               {!!event?.startsAt && (
                 <Text style={styles.description}>Start: {new Date(event.startsAt).toLocaleString()}</Text>
               )}
