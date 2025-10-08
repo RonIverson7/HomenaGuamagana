@@ -653,20 +653,25 @@ export default function ProfileScreen() {
             {/* Changed this block to ScrollView for vertical scroll */}
             <ScrollView>
               {selectedArt?.image && (
-                <Image source={{ uri: selectedArt.image }} style={{ width: '100%', height: 260 }} resizeMode="cover" />
+               <Image source={{ uri: selectedArt.image }} style={styles.artModalImage} />   //BINAGO KO RON
               )}
               <View style={{ padding: 12 }}>
                 
-                {!!selectedArt?.title && (<Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 6 }}>{selectedArt.title}</Text>)}
-                {!!selectedArt?.medium && (<Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>Medium: {selectedArt.medium}</Text>)}
-                {!!selectedArt?.description && (<Text style={{ fontSize: 14, color: '#222' }}>{selectedArt.description}</Text>)}
-                {!!selectedArt?.timestamp && (<Text style={{ fontSize: 12, color: '#888', marginTop: 10 }}>{selectedArt.timestamp}</Text>)}
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                  {!!selectedArt?.title && (
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', flex: 1 }}>{selectedArt.title}</Text>
+                  )}
                   <TouchableOpacity onPress={handleToggleArtLike} style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Icon name={artUserLiked ? 'heart' : 'heart-o'} size={20} color={artUserLiked ? 'red' : '#555'} />
+                    <Icon name={artUserLiked ? 'heart' : 'heart-o'} size={22} color={artUserLiked ? 'red' : '#555'} />
                     <Text style={{ marginLeft: 6 }}>{artLikesCount}</Text>
                   </TouchableOpacity>
                 </View>
+
+                {!!selectedArt?.medium && (<Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>Medium: {selectedArt.medium}</Text>)}
+                {!!selectedArt?.description && (<Text style={{ fontSize: 14, color: '#222' }}>{selectedArt.description}</Text>)}
+                {!!selectedArt?.timestamp && (<Text style={{ fontSize: 12, color: '#888', marginTop: 10 }}>{selectedArt.timestamp}</Text>)}
+             
+
                 <View style={{ height: 1, backgroundColor: '#eee', marginVertical: 10 }} />
                 <ScrollView style={{ maxHeight: 220 }}>
                   {(artComments || []).map((c) => (
@@ -1094,4 +1099,12 @@ const styles = StyleSheet.create({
     alignSelf: "center",
   },
   backgroundPreviewImage: { width: "100%", height: "100%" },
+  artModalImage: {
+    width: '100%',
+    height: 260,
+    resizeMode: 'cover',
+    borderWidth: 3, // you can change thickness
+    borderColor: '#fff', // change to your preferred color (e.g. '#000' or '#fff')
+    borderRadius: 10, // optional for rounded corners
+  },
 });
