@@ -10,17 +10,31 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
+  BackHandler,
 } from 'react-native';
 import Header from '../components/Header'; // Import the reusable Header
 import { supabase } from "../../supabase/supabaseClient";
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 const API_BASE = "http://192.168.100.83:3000/api";
 
 const ViewEventsScreen = () => {
   const [zoomImage, setZoomImage] = useState(null); // State for full-screen image
   const { eventId } = useLocalSearchParams();
+  const router = useRouter();
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // Ensure Android hardware back goes to Events screen
+  useFocusEffect(
+    React.useCallback(() => {
+      const onBackPress = () => {
+        router.replace('/(drawer)/events');
+        return true; // consume the event
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => sub.remove();
+    }, [router])
+  );
 
   useEffect(() => {
     const fetchEvent = async () => {
