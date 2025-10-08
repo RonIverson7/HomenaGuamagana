@@ -59,10 +59,10 @@ const EventsScreen = () => {
   }, []);
 
   const handlePressEvent = (eventId) => {
-    // Keep your same navigation logic
-    if (eventId === 1) {
-      router.push('viewEvents');
-    }
+    if (!eventId) return;
+    console.log('[events] navigating to viewEvents with id:', eventId);
+    // Use absolute path to avoid group resolution issues
+    router.push({ pathname: '/(drawer)/viewEvents', params: { eventId: String(eventId) } });
   };
 
   return (
