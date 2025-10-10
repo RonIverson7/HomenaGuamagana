@@ -58,6 +58,7 @@ export default function ProfileScreen() {
   const [accessToken, setAccessToken] = useState(null);
   const [refreshToken, setRefreshToken] = useState(null);
   const [galleryImages, setGalleryImages] = useState([]);
+  const [role, setRole] = useState(null);
   // Artwork upload modal state
   const [artModalVisible, setArtModalVisible] = useState(false);
   const [artImage, setArtImage] = useState(null); // { uri }
@@ -301,6 +302,39 @@ export default function ProfileScreen() {
   };
 
 
+  // Fetch user role (same concept as in home.js), with verbose logs
+  const fetchRole = async (at, rt) => {
+    try {
+      const res = await fetch(`${API_BASE}/users/role`, {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          Cookie: `access_token=${at}; refresh_token=${rt}`,
+        },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch role: ${res.status} ${res.statusText}`);
+
+      const bodyText = await res.text();
+      console.log("[profile.js] Fetched role raw:", bodyText);
+      let data = null;
+      try {
+        data = bodyText ? JSON.parse(bodyText) : null;
+      } catch (_) {
+        data = bodyText; // plain string role fallback
+      }
+
+      const resolvedRole = typeof data === "string"
+        ? data
+        : (data?.role || data?.user?.role || data?.data?.role || data?.profile?.role || null);
+      setRole(resolvedRole);
+      console.log("[profile.js] Resolved role:", resolvedRole ?? "(null/unknown)");
+    } catch (error) {
+      console.error("[profile.js] Error fetching role:", error?.message || error);
+      setRole(null);
+    }
+  };
+
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -312,6 +346,7 @@ export default function ProfileScreen() {
 
 
         if (at && rt) {
+          await fetchRole(at, rt);
           await fetchProfile(at, rt);
           await fetchGallery(at, rt);
         } else {
