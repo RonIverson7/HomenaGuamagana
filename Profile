@@ -58,7 +58,6 @@ export default function ProfileScreen() {
   const [accessToken, setAccessToken] = useState(null);
   const [refreshToken, setRefreshToken] = useState(null);
   const [galleryImages, setGalleryImages] = useState([]);
-  const [role, setRole] = useState(null);
   // Artwork upload modal state
   const [artModalVisible, setArtModalVisible] = useState(false);
   const [artImage, setArtImage] = useState(null); // { uri }
@@ -71,8 +70,41 @@ export default function ProfileScreen() {
   const [artLikesCount, setArtLikesCount] = useState(0);
   const [artUserLiked, setArtUserLiked] = useState(false);
   const [artNewComment, setArtNewComment] = useState("");
+  const [role, setRole] = useState(null);
 
-
+  useEffect(() => {
+    const fetchUserRole = async () => {
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+  
+        if (error) {
+          console.error("Session error:", error);
+          return;
+        }
+  
+        const accessToken = session?.access_token;
+        if (!accessToken) return;
+  
+        const res = await fetch(`${API_BASE}/users/getRole`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+  
+        const result = await res.json();
+        if (res.ok) {
+          setRole(result.role);
+        } else {
+          console.warn("Failed to fetch role:", result.error);
+        }
+      } catch (err) {
+        console.error("Error fetching role:", err);
+      }
+    };
+  
+    fetchUserRole();
+  }, []);
   // Function to upload artwork image to the backend and refresh gallery
   const uploadArtwork = async (imageUri, meta = {}) => {
     try {
@@ -93,11 +125,7 @@ export default function ProfileScreen() {
         name: "artwork.jpg",
         type: "image/jpeg",
       });
-      // Optional metadata supported by backend: title, description, medium
-      if (meta.title != null) fd.append("title", String(meta.title));
-      if (meta.description != null) fd.append("description", String(meta.description));
-      if (meta.medium != null) fd.append("medium", String(meta.medium));
-
+    
 
       const res = await fetch(`${API_BASE}/profile/uploadArt`, {
         method: "POST",
@@ -302,39 +330,6 @@ export default function ProfileScreen() {
   };
 
 
-  // Fetch user role (same concept as in home.js), with verbose logs
-  const fetchRole = async (at, rt) => {
-    try {
-      const res = await fetch(`${API_BASE}/users/role`, {
-        method: "GET",
-        credentials: "include",
-        headers: {
-          Cookie: `access_token=${at}; refresh_token=${rt}`,
-        },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch role: ${res.status} ${res.statusText}`);
-
-      const bodyText = await res.text();
-      console.log("[profile.js] Fetched role raw:", bodyText);
-      let data = null;
-      try {
-        data = bodyText ? JSON.parse(bodyText) : null;
-      } catch (_) {
-        data = bodyText; // plain string role fallback
-      }
-
-      const resolvedRole = typeof data === "string"
-        ? data
-        : (data?.role || data?.user?.role || data?.data?.role || data?.profile?.role || null);
-      setRole(resolvedRole);
-      console.log("[profile.js] Resolved role:", resolvedRole ?? "(null/unknown)");
-    } catch (error) {
-      console.error("[profile.js] Error fetching role:", error?.message || error);
-      setRole(null);
-    }
-  };
-
-
   useEffect(() => {
     const init = async () => {
       try {
@@ -346,7 +341,6 @@ export default function ProfileScreen() {
 
 
         if (at && rt) {
-          await fetchRole(at, rt);
           await fetchProfile(at, rt);
           await fetchGallery(at, rt);
         } else {
