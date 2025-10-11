@@ -1,26 +1,81 @@
 // app/(drawer)/artists.js
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, Text, SafeAreaView, Image, ScrollView } from 'react-native';
 import Header from '../components/Header'; // Import the reusable Header
+import { supabase } from "../../supabase/supabaseClient";
 
 // Reusable component for each artist card
-const ArtistCard = ({ name, imageSource }) => (
-  <View style={styles.artistCard}>
-    <Image source={imageSource} style={styles.artistImage} />
-    <Text style={styles.artistName}>{name}</Text>
-  </View>
-);
+const ArtistCard = ({ name, imageSource }) => {
+  // Support both local require() images and remote URL strings
+  const resolvedSource = typeof imageSource === 'string' ? { uri: imageSource } : imageSource;
+  return (
+    <View style={styles.artistCard}>
+      <Image source={resolvedSource} style={styles.artistImage} />
+      <Text style={styles.artistName}>{name}</Text>
+    </View>
+  );
+};
 
 const ArtistsScreen = () => {
-  // Sample data for the artist list
-  const artists = [
+  // Match home.js approach
+  const API_BASE = "http://192.168.18.22:3000/api";
+
+  // Keep your current sample data as the initial state to preserve UI
+  const [artists, setArtists] = useState([
     { id: 1, name: 'James McGill', image: require('../../assets/nat.jpeg') },
     { id: 2, name: 'Mike Ehrmantraut', image: require('../../assets/nat.jpeg') },
     { id: 3, name: 'Gustavo Fring', image: require('../../assets/nat.jpeg') },
     { id: 4, name: 'Frank Stella', image: require('../../assets/nat.jpeg') },
     { id: 5, name: 'Erza Blake', image: require('../../assets/nat.jpeg') },
     { id: 6, name: 'Natsuki Deguchi', image: require('../../assets/nat.jpeg') },
-  ];
+  ]);
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const initAndFetch = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const at = data?.session?.access_token || null;
+        const rt = data?.session?.refresh_token || null;
+        if (isMounted) {
+          setAccessToken(at);
+          setRefreshToken(rt);
+        }
+
+        // Fetch artists using Cookie header (same concept as home.js)
+        const res = await fetch(`${API_BASE}/artist/getArtist`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}`,
+          },
+        });
+
+        if (!res.ok) {
+          console.warn('[artists.js] Failed to fetch artists:', res.status, res.statusText);
+          return; // Keep sample data on failure
+        }
+
+        const json = await res.json();
+        const list = Array.isArray(json?.artists) ? json.artists : [];
+        if (isMounted && list.length) {
+          setArtists(list.map((a) => ({
+            id: a.id || a.username || String(Math.random()),
+            name: a.name || a.username || 'Untitled Artist',
+            image: a.hero || a.image || null,
+          })));
+        }
+      } catch (e) {
+        console.warn('[artists.js] Error fetching artists:', e?.message || e);
+      }
+    };
+
+    initAndFetch();
+    return () => { isMounted = false; };
+  }, [API_BASE]);
 
   return (
     <SafeAreaView style={styles.container}>
