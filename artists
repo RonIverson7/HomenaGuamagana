@@ -1,28 +1,30 @@
 // app/(drawer)/artists.js
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, Image, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, SafeAreaView, Image, ScrollView, TouchableOpacity } from 'react-native';
 import Header from '../components/Header'; // Import the reusable Header
 import { supabase } from "../../supabase/supabaseClient";
+import { useRouter } from "expo-router";
 
 // Reusable component for each artist card
-const ArtistCard = ({ name, imageSource }) => {
+const ArtistCard = ({ name, imageSource, onPress }) => {
   // Support both local require() images and remote URL strings
   const resolvedSource = typeof imageSource === 'string' ? { uri: imageSource } : imageSource;
   return (
-    <View style={styles.artistCard}>
+    <TouchableOpacity style={styles.artistCard} activeOpacity={0.8} onPress={onPress}>
       {resolvedSource ? (
         <Image source={resolvedSource} style={styles.artistImage} />
       ) : (
         <View style={[styles.artistImage, styles.placeholderCircle]} />
       )}
       <Text style={styles.artistName}>{name}</Text>
-    </View>
+    </TouchableOpacity>
   );
 };
 
 const ArtistsScreen = () => {
   // Match home.js approach
   const API_BASE = "http://192.168.18.22:3000/api";
+  const router = useRouter();
 
   // Start with empty list; we will fetch from backend
   const [artists, setArtists] = useState([]);
@@ -63,6 +65,7 @@ const ArtistsScreen = () => {
         if (isMounted && list.length) {
           setArtists(list.map((a) => ({
             id: a.id || a.username || String(Math.random()),
+            username: a.username || null,
             name: a.name || a.username || 'Untitled Artist',
             image: a.hero || a.image || null,
           })));
@@ -92,7 +95,21 @@ const ArtistsScreen = () => {
         ) : null}
         <View style={styles.row}>
           {artists.map(artist => (
-            <ArtistCard key={artist.id} name={artist.name} imageSource={artist.image} />
+            <ArtistCard
+              key={artist.id}
+              name={artist.name}
+              imageSource={artist.image}
+              onPress={() => {
+                router.push({
+                  pathname: '/(drawer)/viewArtist',
+                  params: {
+                    id: String(artist.id ?? ''),
+                    username: String(artist.username ?? ''),
+                    name: String(artist.name ?? ''),
+                  },
+                });
+              }}
+            />
           ))}
         </View>
       </ScrollView>
