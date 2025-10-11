@@ -85,14 +85,10 @@ const CustomDrawerContent = () => {
     <SafeAreaView style={styles.drawerContainer}>
       {/* Header */}
       <View style={styles.drawerHeader}>
-        {(avatarUrl || coverUrl) ? (
-          <Image
-            source={{ uri: avatarUrl || coverUrl }}
-            style={styles.profilePic}
-          />
-        ) : (
-          <View style={[styles.profilePic, { backgroundColor: '#e9e9e9', borderWidth: 1, borderColor: '#ddd' }]} />
-        )}
+        <Image
+          source={avatarUrl ? { uri: avatarUrl } : (coverUrl ? { uri: coverUrl } : require('../../assets/RonProfile.jpeg'))}
+          style={styles.profilePic}
+        />
         <View style={styles.profileInfo}>
           <Text style={styles.profileName}>{username || 'User'}</Text>
         </View>
@@ -103,7 +99,7 @@ const CustomDrawerContent = () => {
         {menuItems.map((item, index) => (
           <MenuItem key={index} icon={item.icon} label={item.label} onPress={() => router.push(item.route)} />
         ))}
-      </View>
+      </View> 
 
       {/* Logout */}
       <TouchableOpacity style={styles.logoutButton} onPress={() => router.push('/')}>
