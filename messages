@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import Header from '../components/Header'; // Reusable header
 import { supabase } from "../../supabase/supabaseClient";
+import io from 'socket.io-client';
 
 // Chat item component
 const ChatItem = ({ name, lastMessage, imageSource, onPress }) => {
@@ -37,55 +38,77 @@ const MessagesScreen = () => {
     return u.startsWith('http') ? u : `${API_ORIGIN}${u}`;
   };
 
+  const fetchConversations = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const at = data?.session?.access_token || null;
+      const rt = data?.session?.refresh_token || null;
+      setAccessToken(at);
+      setRefreshToken(rt);
+
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/message/getConversation`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}`,
+        },
+      });
+      if (!res.ok) {
+        console.warn('[messages.js] Failed to fetch conversations:', res.status, res.statusText);
+        setConversations([]);
+        return;
+      }
+      const json = await res.json();
+      const list = Array.isArray(json?.conversations) ? json.conversations : [];
+      const mapped = list.map((c) => {
+        const other = c.otherUser || {};
+        const nameParts = [other.firstName, other.middleName, other.lastName].filter(Boolean);
+        const displayName = (nameParts.join(' ') || other.username || 'User').trim();
+        return {
+          id: c.conversationId,
+          name: displayName,
+          lastMessage: c.lastMessageContent || '',
+          avatar: resolveUrl(other.profilePicture),
+        };
+      });
+      setConversations(mapped);
+    } catch (e) {
+      console.warn('[messages.js] Error fetching conversations:', e?.message || e);
+      setConversations([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [API_BASE]);
+
   useEffect(() => {
-    let isMounted = true;
-    const fetchConversations = async () => {
+    fetchConversations();
+  }, [fetchConversations]);
+
+  // Realtime updates for conversation list
+  useEffect(() => {
+    let socket;
+    let mounted = true;
+    const setup = async () => {
       try {
         const { data } = await supabase.auth.getSession();
-        const at = data?.session?.access_token || null;
-        const rt = data?.session?.refresh_token || null;
-        if (isMounted) {
-          setAccessToken(at);
-          setRefreshToken(rt);
-        }
-
-        setLoading(true);
-        const res = await fetch(`${API_BASE}/message/getConversation`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}`,
-          },
+        const uid = data?.session?.user?.id;
+        if (!uid) return;
+        socket = io(API_ORIGIN, { transports: ['websocket'], withCredentials: true });
+        socket.on('connect', () => {
+          socket.emit('join', uid);
         });
-        if (!res.ok) {
-          console.warn('[messages.js] Failed to fetch conversations:', res.status, res.statusText);
-          if (isMounted) setConversations([]);
-          return;
-        }
-        const json = await res.json();
-        const list = Array.isArray(json?.conversations) ? json.conversations : [];
-        const mapped = list.map((c) => {
-          const other = c.otherUser || {};
-          const nameParts = [other.firstName, other.middleName, other.lastName].filter(Boolean);
-          const displayName = (nameParts.join(' ') || other.username || 'User').trim();
-          return {
-            id: c.conversationId,
-            name: displayName,
-            lastMessage: c.lastMessageContent || '',
-            avatar: resolveUrl(other.profilePicture),
-          };
-        });
-        if (isMounted) setConversations(mapped);
-      } catch (e) {
-        console.warn('[messages.js] Error fetching conversations:', e?.message || e);
-        if (isMounted) setConversations([]);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
+        const refresh = () => { if (mounted) fetchConversations(); };
+        socket.on('message:new', refresh);
+        socket.on('conversation:updated', refresh);
+      } catch {}
     };
-    fetchConversations();
-    return () => { isMounted = false; };
-  }, [API_BASE]);
+    setup();
+    return () => {
+      mounted = false;
+      try { if (socket) { socket.removeAllListeners(); socket.disconnect(); } } catch {}
+    };
+  }, [API_ORIGIN, fetchConversations]);
 
   return (
     <SafeAreaView style={styles.container}>
