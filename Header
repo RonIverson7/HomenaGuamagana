@@ -92,6 +92,7 @@ const Header = ({ title, showSearch }) => {
 
   const mapRows = (rows) => rows.map((n) => ({
     id: n.id || n.notificationId || String(n.createdAt || n.created_at || Math.random()),
+    notificationId: n.notificationId || n.id || null,
     title: n.title || n.type || 'Notification',
     message: n.message || n.body || n.content || '',
     createdAt: n.createdAt || n.created_at || null,
@@ -182,6 +183,21 @@ const Header = ({ title, showSearch }) => {
     } catch {}
   }, [ensureTokens]);
 
+  const markSingleRead = useCallback(async (item) => {
+    try {
+      const { at, rt } = await ensureTokens();
+      if (item?.notificationId) {
+        await fetch(`${API_BASE}/notification/${encodeURIComponent(item.notificationId)}/read`, {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at}; refresh_token=${rt}`, 'Authorization': at ? `Bearer ${at}` : '' },
+        });
+      }
+      setNotifications(prev => prev.map(p => (p.id === item.id ? { ...p, read: true } : p)));
+      setUnreadCount(c => Math.max(0, c - (item.read ? 0 : 1)));
+    } catch {}
+  }, [ensureTokens]);
+
   useEffect(() => {
     let socket;
     let mounted = true;
@@ -194,14 +210,20 @@ const Header = ({ title, showSearch }) => {
         const onNew = (payload) => {
           if (!mounted || !payload) return;
           const n = payload.notification || payload;
+          const nid = n.notificationId || n.id || null;
           const item = {
-            id: n.id || String(Date.now()),
+            id: n.id || nid || String(Date.now()),
+            notificationId: nid,
             title: n.title || n.type || 'Notification',
             message: n.message || n.body || n.content || '',
             createdAt: n.createdAt || n.created_at || new Date().toISOString(),
             read: false,
           };
-          setNotifications(prev => [item, ...prev]);
+          setNotifications(prev => {
+            const exists = prev.some(p => (p.id && p.id === item.id) || (p.notificationId && item.notificationId && p.notificationId === item.notificationId));
+            if (exists) return prev;
+            return [item, ...prev];
+          });
           setUnreadCount(c => c + 1);
         };
         socket.on('notification:new', onNew);
@@ -249,19 +271,31 @@ const Header = ({ title, showSearch }) => {
               )}
             </TouchableOpacity>
 
-            {/* Notification dropdown */}
             {notifVisible && (
               <View style={styles.notifDropdown}>
+                <View style={styles.notifHeaderRow}>
+                  <Text style={styles.notifHeaderTitle}>Notifications</Text>
+                  {unreadCount > 0 && (
+                    <View style={styles.notifChip}><Text style={styles.notifChipText}>{unreadCount}</Text></View>
+                  )}
+                  {unreadCount > 0 && (
+                    <TouchableOpacity onPress={markAllRead} style={styles.notifMarkBtn}>
+                      <Text style={styles.notifMarkBtnText}>Mark all read</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
                 <ScrollView>
                   {notifications.length === 0 ? (
                     <Text style={styles.notifItem}>No notifications</Text>
                   ) : (
                     notifications.map(n => (
-                      <Text key={n.id} style={styles.notifItem}>
-                        <Text style={styles.bold}>{n.title}</Text>{"\n"}
-                        {n.message}
-                        {n.createdAt ? `\n${formatTime(n.createdAt)}` : ''}
-                      </Text>
+                      <TouchableOpacity key={n.id} onPress={() => markSingleRead(n)}>
+                        <Text style={[styles.notifItem, !n.read ? styles.notifItemUnread : null]}>
+                          <Text style={styles.bold}>{n.title}</Text>{"\n"}
+                          {n.message}
+                          {n.createdAt ? `\n${formatTime(n.createdAt)}` : ''}
+                        </Text>
+                      </TouchableOpacity>
                     ))
                   )}
                 </ScrollView>
@@ -313,6 +347,25 @@ const styles = StyleSheet.create({
   profileButton: { marginLeft: 15 },
   profilePic: { width: 30, height: 30, borderRadius: 15 },
   divider: { height: 1, backgroundColor: "#e0e0e0" },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#e53935',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    zIndex: 2,
+  },
+  badgeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
+  },
   searchContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -340,10 +393,31 @@ const styles = StyleSheet.create({
     elevation: 5,
     zIndex: 1000,
   },
+  notifHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginBottom: 8,
+    gap: 8,
+  },
+  notifHeaderTitle: { fontSize: 16, fontWeight: '600', marginRight: 8 },
+  notifChip: {
+    backgroundColor: '#6200EE',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginRight: 8,
+  },
+  notifChipText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  notifMarkBtn: { marginLeft: 'auto' },
+  notifMarkBtnText: { color: '#6200EE', fontSize: 12, fontWeight: '600' },
   notifItem: {
     marginBottom: 10,
     fontSize: 14,
     color: "#333",
+  },
+  notifItemUnread: {
+    fontWeight: '600',
   },
   bold: { fontWeight: "bold" },
 });
