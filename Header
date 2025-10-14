@@ -90,14 +90,39 @@ const Header = ({ title, showSearch }) => {
     return d.toLocaleDateString();
   };
 
-  const mapRows = (rows) => rows.map((n) => ({
-    id: n.id || n.notificationId || String(n.createdAt || n.created_at || Math.random()),
-    notificationId: n.notificationId || n.id || null,
-    title: n.title || n.type || 'Notification',
-    message: n.message || n.body || n.content || '',
-    createdAt: n.createdAt || n.created_at || null,
-    read: !!(n.read || n.isRead),
-  }));
+  const timeAgo = (iso) => {
+    try {
+      const t = new Date(iso).getTime();
+      const s = Math.max(1, Math.floor((Date.now() - t) / 1000));
+      if (s < 60) return `${s}s ago`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      const d = Math.floor(h / 24);
+      return `${d}d ago`;
+    } catch {
+      return '';
+    }
+  };
+
+  const mapRows = (rows) => rows.map((n) => {
+    let data = n?.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch { data = undefined; }
+    }
+    const eventId = n?.eventId || data?.eventId || null;
+    return {
+      id: n.id || n.notificationId || String(n.createdAt || n.created_at || Math.random()),
+      notificationId: n.notificationId || n.id || null,
+      title: n.title || n.type || 'Notification',
+      message: n.message || n.body || n.content || data?.venueName || '',
+      createdAt: n.createdAt || n.created_at || null,
+      read: !!(n.read || n.isRead),
+      type: n.type || null,
+      eventId,
+    };
+  });
 
   const fetchFrom = async (url, at, rt) => {
     const res = await fetch(url, {
@@ -150,6 +175,16 @@ const Header = ({ title, showSearch }) => {
       console.warn('[Header] notif list error', e?.message || e);
     }
   }, [ensureTokens]);
+
+  const openNotification = useCallback((item) => {
+    try { markSingleRead(item); } catch {}
+    if (item?.eventId) {
+      router.push(`/(drawer)/viewEvents?eventId=${encodeURIComponent(item.eventId)}`);
+      setNotifVisible(false);
+      return;
+    }
+    // Fallbacks for other types can be added here
+  }, [markSingleRead, router]);
 
   useEffect(() => {
     fetchNotifications();
@@ -210,7 +245,10 @@ const Header = ({ title, showSearch }) => {
         const onNew = (payload) => {
           if (!mounted || !payload) return;
           const n = payload.notification || payload;
+          let data = n?.data;
+          if (typeof data === 'string') { try { data = JSON.parse(data); } catch { data = undefined; } }
           const nid = n.notificationId || n.id || null;
+          const evtId = n?.eventId || data?.eventId || null;
           const item = {
             id: n.id || nid || String(Date.now()),
             notificationId: nid,
@@ -218,6 +256,8 @@ const Header = ({ title, showSearch }) => {
             message: n.message || n.body || n.content || '',
             createdAt: n.createdAt || n.created_at || new Date().toISOString(),
             read: false,
+            type: n.type || null,
+            eventId: evtId,
           };
           setNotifications(prev => {
             const exists = prev.some(p => (p.id && p.id === item.id) || (p.notificationId && item.notificationId && p.notificationId === item.notificationId));
@@ -288,14 +328,17 @@ const Header = ({ title, showSearch }) => {
                   {notifications.length === 0 ? (
                     <Text style={styles.notifItem}>No notifications</Text>
                   ) : (
-                    notifications.map(n => (
-                      <TouchableOpacity key={n.id} onPress={() => markSingleRead(n)}>
-                        <Text style={[styles.notifItem, !n.read ? styles.notifItemUnread : null]}>
-                          <Text style={styles.bold}>{n.title}</Text>{"\n"}
-                          {n.message}
-                          {n.createdAt ? `\n${formatTime(n.createdAt)}` : ''}
-                        </Text>
-                      </TouchableOpacity>
+                    notifications.map((n, idx) => (
+                      <View key={n.id}>
+                        <TouchableOpacity onPress={() => openNotification(n)}>
+                          <Text style={[styles.notifItem, !n.read ? styles.notifItemUnread : null]}>
+                            <Text style={styles.bold}>{n.title}</Text>{"\n"}
+                            {n.message}
+                            {n.createdAt ? `\n${timeAgo(n.createdAt)}` : ''}
+                          </Text>
+                        </TouchableOpacity>
+                        {idx < notifications.length - 1 && <View style={styles.notifSeparator} />}
+                      </View>
                     ))
                   )}
                 </ScrollView>
@@ -418,6 +461,11 @@ const styles = StyleSheet.create({
   },
   notifItemUnread: {
     fontWeight: '600',
+  },
+  notifSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#000',
+    marginVertical: 6,
   },
   bold: { fontWeight: "bold" },
 });
