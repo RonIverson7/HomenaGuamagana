@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   SafeAreaView,
   View,
@@ -13,31 +13,41 @@ import {
   Platform,
   TouchableWithoutFeedback,
   BackHandler,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Header from '../components/Header';
+import { supabase } from "../../supabase/supabaseClient";
 
-const messagesData = [
-  { id: '1', text: 'Hello tol', sender: 'other', avatar: require('../../assets/nat.jpeg') },
-  { id: '2', text: 'Pwede patulong?', sender: 'other', avatar: require('../../assets/nat.jpeg') },
-  { id: '3', text: 'Sige ba', sender: 'me' },
-  { id: '4', text: 'Papinta po', sender: 'other', avatar: require('../../assets/nat.jpeg') },
-  { id: '5', text: 'Ano gusto mo?', sender: 'me' },
-  { id: '6', text: 'Garfield po', sender: 'other', avatar: require('../../assets/nat.jpeg') },
-  { id: '7', text: 'Sige pre', sender: 'me' },
-];
+const API_BASE = "http://192.168.100.83:3000/api";
+const API_ORIGIN = API_BASE.replace(/\/api$/, "");
+const INPUT_BAR_BASE_HEIGHT = 56; // approximate input bar height
 
 const ViewMessageScreen = () => {
-  const { name } = useLocalSearchParams();
+  const { conversationId, name: initialName } = useLocalSearchParams();
   const router = useRouter();
   const flatListRef = useRef(null);
-  const [messages, setMessages] = useState(messagesData);
+  const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [inputHeight, setInputHeight] = useState(40);
+  const [loading, setLoading] = useState(true);
+  const [meId, setMeId] = useState(null);
+  const [partnerId, setPartnerId] = useState(null);
+  const [partnerName, setPartnerName] = useState(initialName || '');
+  const [partnerAvatar, setPartnerAvatar] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
   const insets = useSafeAreaInsets();
   const keyboardHeight = useRef(new Animated.Value(0)).current;
+
+  const formatTitle = (name) => {
+    if (!name) return 'Message';
+    const tokens = String(name).trim().split(/\s+/);
+    if (tokens.length <= 2) return name;
+    return `${tokens.slice(0, 2).join(' ')}...`;
+  };
 
   // Ensure Android hardware back goes to messages list
   useFocusEffect(
@@ -75,37 +85,154 @@ const ViewMessageScreen = () => {
     }
   }, []);
 
-  const renderItem = ({ item }) => (
-    <View
-      style={[
-        styles.messageRow,
-        item.sender === 'me' ? styles.rightAlign : styles.leftAlign,
-      ]}
-    >
-      {item.sender === 'other' && <Image source={item.avatar} style={styles.avatar} />}
+  const renderItem = useCallback(({ item }) => {
+    const isMe = item.sender === 'me';
+    const avatarUri = !isMe ? (item.avatar || partnerAvatar) : null;
+    const avatarSource = typeof avatarUri === 'string' ? { uri: avatarUri } : avatarUri;
+    const timeLabel = item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    return (
       <View
         style={[
-          styles.bubble,
-          item.sender === 'me' ? styles.myBubble : styles.otherBubble,
+          styles.messageRow,
+          isMe ? styles.rightAlign : styles.leftAlign,
         ]}
       >
-        <Text style={item.sender === 'me' ? styles.myMessageText : styles.messageText}>
-          {item.text}
-        </Text>
+        {!isMe && !!avatarSource && <Image source={avatarSource} style={styles.avatar} />}
+        <View
+          style={[
+            styles.bubble,
+            isMe ? styles.myBubble : styles.otherBubble,
+          ]}
+        >
+          <Text style={isMe ? styles.myMessageText : styles.messageText}>
+            {item.text}
+          </Text>
+          {!!timeLabel && (
+            <Text style={isMe ? styles.myTimestamp : styles.timestamp}>{timeLabel}</Text>
+          )}
+        </View>
       </View>
-    </View>
-  );
+    );
+  }, [partnerAvatar]);
 
-  const handleSend = () => {
-    if (inputText.trim() === '') return;
-    const newMessage = { id: Date.now().toString(), text: inputText, sender: 'me' };
-    setMessages([...messages, newMessage]);
+  const resolveUrl = (u) => (!u ? null : (String(u).startsWith('http') ? String(u) : `${API_ORIGIN}${u}`));
+
+  const loadSession = async () => {
+    const { data } = await supabase.auth.getSession();
+    const at = data?.session?.access_token || null;
+    const rt = data?.session?.refresh_token || null;
+    const uid = data?.session?.user?.id || null;
+    setAccessToken(at);
+    setRefreshToken(rt);
+    setMeId(uid);
+    return { at, rt, uid };
+  };
+
+  const fetchConversationMeta = async (at, rt) => {
+    try {
+      const res = await fetch(`${API_BASE}/message/getConversation`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}` },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const list = Array.isArray(json?.conversations) ? json.conversations : [];
+      const found = list.find(c => String(c.conversationId) === String(conversationId));
+      if (found) {
+        const other = found.otherUser || {};
+        const nameParts = [other.firstName, other.middleName, other.lastName].filter(Boolean);
+        const displayName = (nameParts.join(' ') || other.username || 'User').trim();
+        setPartnerId(other.id || null);
+        setPartnerName(displayName);
+        setPartnerAvatar(resolveUrl(other.profilePicture));
+      }
+    } catch {}
+  };
+
+  const fetchMessages = async (at, rt, uid) => {
+    if (!conversationId) return;
+    try {
+      const res = await fetch(`${API_BASE}/message/getConversation/${encodeURIComponent(conversationId)}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}` },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const rows = Array.isArray(json?.messages) ? json.messages : [];
+      const mapped = rows.map((m) => ({
+        id: m.id || m.messageId || String(m.created_at || Math.random()),
+        text: m.content || '',
+        sender: m.senderId === uid ? 'me' : 'other',
+        avatar: m.senderId === meId ? null : partnerAvatar,
+        createdAt: m.created_at || null,
+      }));
+      setMessages(mapped);
+    } catch (e) {
+      setMessages([]);
+    }
+  };
+
+  const markRead = async (at, rt) => {
+    if (!conversationId) return;
+    try {
+      await fetch(`${API_BASE}/message/markRead/${encodeURIComponent(conversationId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}` },
+      });
+    } catch {}
+  };
+
+  const refreshAll = async () => {
+    setLoading(true);
+    try {
+      const { at, rt, uid } = await loadSession();
+      await fetchConversationMeta(at, rt);
+      await fetchMessages(at, rt, uid);
+      await markRead(at, rt);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  // Always keep scrolled to latest when messages change (single source of truth)
+  useEffect(() => {
+    requestAnimationFrame(() => flatListRef.current?.scrollToEnd({ animated: true }));
+  }, [messages.length]);
+
+  const handleSend = async () => {
+    const text = inputText.trim();
+    if (!text) return;
     setInputText('');
     setInputHeight(40);
+    const optimistic = { id: `tmp-${Date.now()}`, text, sender: 'me', createdAt: new Date().toISOString() };
+    setMessages(prev => [...prev, optimistic]);
 
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    try {
+      const { at, rt } = await loadSession();
+      // Need partnerId for sending; if missing, try ensure meta
+      let rid = partnerId;
+      if (!rid) {
+        await fetchConversationMeta(at, rt);
+        rid = partnerId;
+      }
+      if (!rid) return;
+      const res = await fetch(`${API_BASE}/message/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `access_token=${at || ''}; refresh_token=${rt || ''}`,
+        },
+        body: JSON.stringify({ receiverId: rid, content: text }),
+      });
+      if (!res.ok) return;
+      // Refresh messages to replace optimistic
+      await fetchMessages(at, rt);
+    } catch {}
   };
 
   const InputBar = (
@@ -136,7 +263,7 @@ const ViewMessageScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="View Message" showSearch={false} />
+      <Header title={formatTitle(partnerName)} showSearch={true} />
 
       {Platform.OS === 'ios' ? (
         <KeyboardAvoidingView
@@ -151,12 +278,17 @@ const ViewMessageScreen = () => {
                 data={messages}
                 keyExtractor={(item) => item.id}
                 renderItem={renderItem}
-                contentContainerStyle={styles.chatContainer}
-                onContentSizeChange={() =>
-                  flatListRef.current?.scrollToEnd({ animated: true })
-                }
+                contentContainerStyle={[styles.chatContainer, { paddingBottom: INPUT_BAR_BASE_HEIGHT + Math.max(insets.bottom, 8) + 8 }]}
                 style={{ flex: 1 }}
                 keyboardShouldPersistTaps="handled"
+                initialNumToRender={20}
+                maxToRenderPerBatch={10}
+                windowSize={7}
+                removeClippedSubviews={false}
+                showsVerticalScrollIndicator
+                decelerationRate={Platform.OS === 'ios' ? 'fast' : 0.98}
+                scrollEventThrottle={16}
+                ListFooterComponent={<View style={{ height: INPUT_BAR_BASE_HEIGHT + Math.max(insets.bottom, 8) }} />}
               />
               {InputBar}
             </View>
@@ -170,12 +302,17 @@ const ViewMessageScreen = () => {
               data={messages}
               keyExtractor={(item) => item.id}
               renderItem={renderItem}
-              contentContainerStyle={styles.chatContainer}
-              onContentSizeChange={() =>
-                flatListRef.current?.scrollToEnd({ animated: true })
-              }
+              contentContainerStyle={[styles.chatContainer, { paddingBottom: INPUT_BAR_BASE_HEIGHT + Math.max(insets.bottom, 8) + 8 }]}
               style={{ flex: 1 }}
               keyboardShouldPersistTaps="handled"
+              initialNumToRender={20}
+              maxToRenderPerBatch={10}
+              windowSize={7}
+              removeClippedSubviews={false}
+              showsVerticalScrollIndicator
+              decelerationRate={Platform.OS === 'ios' ? 'fast' : 0.98}
+              scrollEventThrottle={16}
+              ListFooterComponent={<View style={{ height: INPUT_BAR_BASE_HEIGHT + Math.max(insets.bottom, 8) }} />}
             />
             <Animated.View style={{ position: 'absolute', left: 0, right: 0, bottom: keyboardHeight }}>
               {InputBar}
@@ -188,7 +325,7 @@ const ViewMessageScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f0f2f5' },
+  container: { flex: 1, backgroundColor: '#fff' },
   chatContainer: { padding: 10 },
   messageRow: { flexDirection: 'row', marginBottom: 8, alignItems: 'flex-end' },
   leftAlign: { justifyContent: 'flex-start' },
@@ -209,6 +346,8 @@ const styles = StyleSheet.create({
   myBubble: { backgroundColor: '#6200EE' },
   messageText: { fontSize: 15, color: '#000' },
   myMessageText: { color: '#fff' },
+  timestamp: { fontSize: 10, color: '#888', marginTop: 4, alignSelf: 'flex-start' },
+  myTimestamp: { fontSize: 10, color: '#e6dbff', marginTop: 4, alignSelf: 'flex-end' },
   inputContainerWrapper: { backgroundColor: '#fff' },
   inputContainer: {
     flexDirection: 'row',
