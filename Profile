@@ -893,7 +893,13 @@ export default function ProfileScreen() {
       {(String(role || '').toLowerCase() === 'artist' || String(role || '').toLowerCase() === 'admin') && (
         <>
           <Text style={styles.sectionTitle}>Artwork Galleries</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.galleryRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.galleryRow}
+            decelerationRate={Platform.OS === 'ios' ? 'fast' : 0.98}
+            scrollEventThrottle={16}
+          >
             {galleryImages.map((art, index) => (
               <TouchableOpacity key={index} onPress={() => setSelectedArt(art)}>
                 <Image source={{ uri: art.image }} style={styles.galleryItem} />
@@ -909,10 +915,19 @@ export default function ProfileScreen() {
 
       {/* Artwork Details Modal */}
       <Modal visible={selectedArt !== null} transparent animationType="fade" onRequestClose={() => setSelectedArt(null)}>
-        <TouchableOpacity style={styles.fullScreenContainer} onPress={() => setSelectedArt(null)} activeOpacity={1}>
+        <View style={styles.fullScreenContainer}>
           <View style={{ width: '90%', maxHeight: '85%', backgroundColor: '#fff', borderRadius: 12, overflow: 'hidden' }}>
+            {/* Explicit close button */}
+            <TouchableOpacity onPress={() => setSelectedArt(null)} style={styles.modalCloseButton}>
+              <Icon name="close" size={20} color="#fff" />
+            </TouchableOpacity>
             {/* Changed this block to ScrollView for vertical scroll */}
-            <ScrollView>
+            <ScrollView
+              contentContainerStyle={{ paddingBottom: 16 }}
+              decelerationRate={Platform.OS === 'ios' ? 'fast' : 0.98}
+              scrollEventThrottle={16}
+              showsVerticalScrollIndicator
+            >
               {selectedArt?.image && (
                <Image source={{ uri: selectedArt.image }} style={styles.artModalImage} />   //BINAGO KO RON
               )}
@@ -934,7 +949,13 @@ export default function ProfileScreen() {
              
 
                 <View style={{ height: 1, backgroundColor: '#eee', marginVertical: 10 }} />
-                <ScrollView style={{ maxHeight: 220 }}>
+                <ScrollView
+                  style={{ maxHeight: 220 }}
+                  keyboardShouldPersistTaps="handled"
+                  decelerationRate={Platform.OS === 'ios' ? 'fast' : 0.98}
+                  scrollEventThrottle={16}
+                  showsVerticalScrollIndicator
+                >
                   {(artComments || []).map((c) => (
                     <View key={c.id} style={{ flexDirection: 'row', marginBottom: 10 }}>
                       <Image source={{ uri: c.user?.avatar }} style={{ width: 32, height: 32, borderRadius: 16, marginRight: 8 }} />
@@ -960,7 +981,7 @@ export default function ProfileScreen() {
               </View>
             </ScrollView>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
 
@@ -1374,5 +1395,17 @@ const styles = StyleSheet.create({
     height: 120,       // You can adjust the height as well
     borderRadius: 12,
     backgroundColor: '#f0f0f0',
+  },
+  modalCloseButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
   },
 });
