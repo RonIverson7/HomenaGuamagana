@@ -70,9 +70,16 @@ const MessagesScreen = () => {
           name: displayName,
           lastMessage: c.lastMessageContent || '',
           avatar: resolveUrl(other.profilePicture),
+          lastMessageTime: c.lastMessageTimestamp || c.lastMessageTime || c.updatedAt || 0,
         };
       });
-      setConversations(mapped);
+      // Sort by most recent message first
+      const sorted = mapped.sort((a, b) => {
+        const timeA = new Date(a.lastMessageTime).getTime() || 0;
+        const timeB = new Date(b.lastMessageTime).getTime() || 0;
+        return timeB - timeA;
+      });
+      setConversations(sorted);
     } catch (e) {
       console.warn('[messages.js] Error fetching conversations:', e?.message || e);
       setConversations([]);
