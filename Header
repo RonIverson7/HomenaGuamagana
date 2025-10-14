@@ -1,12 +1,12 @@
-
 // app/components/Header.js
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { View, Text, Image, TouchableOpacity, StyleSheet, TextInput, ScrollView } from "react-native";
 import { FontAwesome5, Ionicons, Feather } from '@expo/vector-icons';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from "../../supabase/supabaseClient";
+import io from 'socket.io-client';
 
-const API_BASE = "http://192.168.18.22:3000/api";
+const API_BASE = "http://192.168.100.83:3000/api";
 const API_ORIGIN = API_BASE.replace(/\/api$/, "");
 
 const Header = ({ title, showSearch }) => {
@@ -15,6 +15,19 @@ const Header = ({ title, showSearch }) => {
   const [notifVisible, setNotifVisible] = useState(false); // notification dropdown visibility
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [coverUrl, setCoverUrl] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const ensureTokens = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const at = data?.session?.access_token || '';
+      const rt = data?.session?.refresh_token || '';
+      return { at, rt, uid: data?.session?.user?.id || null };
+    } catch (e) {
+      return { at: '', rt: '', uid: null };
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -26,16 +39,32 @@ const Header = ({ title, showSearch }) => {
         const res = await fetch(`${API_BASE}/profile/getProfile`, {
           method: 'GET',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json', Cookie: `access_token=${at}; refresh_token=${rt}` },
+          headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
         });
         const bodyText = await res.text();
         let json = null; try { json = bodyText ? JSON.parse(bodyText) : null; } catch { json = null; }
         if (res.ok && json) {
           const p = json?.profile ?? json;
-          const rawAvatar = p?.profilePicture || p?.avatar || p?.data?.profilePicture || p?.user?.profilePicture || null;
-          const rawCover = p?.coverPicture || p?.cover || p?.data?.coverPicture || p?.user?.coverPicture || null;
-          const resolvedAvatar = rawAvatar ? (String(rawAvatar).startsWith('http') ? rawAvatar : `${API_ORIGIN}${rawAvatar}`) : null;
-          const resolvedCover = rawCover ? (String(rawCover).startsWith('http') ? rawCover : `${API_ORIGIN}${rawCover}`) : null;
+          // normalize possibly array/object values to string
+          const pick = (v) => {
+            if (!v) return null;
+            if (typeof v === 'string') return v;
+            if (Array.isArray(v)) return v.length ? pick(v[0]) : null;
+            if (typeof v === 'object' && typeof v.uri === 'string') return v.uri;
+            return null;
+          };
+          const resolveUrl = (u) => {
+            if (!u) return null;
+            const s = String(u);
+            if (s.startsWith('http://') || s.startsWith('https://')) return s;
+            // ensure leading slash for origin join
+            return `${API_ORIGIN}${s.startsWith('/') ? s : `/${s}`}`;
+          };
+
+          const rawAvatar = pick(p?.profilePicture) || pick(p?.avatar) || pick(p?.data?.profilePicture) || pick(p?.user?.profilePicture) || null;
+          const rawCover = pick(p?.coverPicture) || pick(p?.cover) || pick(p?.data?.coverPicture) || pick(p?.user?.coverPicture) || null;
+          const resolvedAvatar = resolveUrl(rawAvatar);
+          const resolvedCover = resolveUrl(rawCover);
           if (mounted) {
             setAvatarUrl(resolvedAvatar);
             setCoverUrl(resolvedCover);
@@ -45,6 +74,150 @@ const Header = ({ title, showSearch }) => {
     })();
     return () => { mounted = false; };
   }, []);
+
+  const formatTime = (t) => {
+    if (!t) return '';
+    const d = new Date(t);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      const h = d.getHours() % 12 || 12;
+      const m = d.getMinutes().toString().padStart(2, '0');
+      const ap = d.getHours() >= 12 ? 'PM' : 'AM';
+      return `${h}:${m} ${ap}`;
+    }
+    return d.toLocaleDateString();
+  };
+
+  const mapRows = (rows) => rows.map((n) => ({
+    id: n.id || n.notificationId || String(n.createdAt || n.created_at || Math.random()),
+    title: n.title || n.type || 'Notification',
+    message: n.message || n.body || n.content || '',
+    createdAt: n.createdAt || n.created_at || null,
+    read: !!(n.read || n.isRead),
+  }));
+
+  const fetchFrom = async (url, at, rt) => {
+    const res = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at}; refresh_token=${rt}`, 'Authorization': at ? `Bearer ${at}` : '' },
+    });
+    const bodyText = await res.text();
+    let json = null; try { json = bodyText ? JSON.parse(bodyText) : null; } catch { json = null; }
+    if (!res.ok) {
+      console.warn('[Header] notif fetch failed', url, res.status, res.statusText, bodyText?.slice(0, 200));
+      return { items: [], ok: false };
+    }
+    const maybe = (obj) => (Array.isArray(obj) ? obj : (obj && (obj.notifications || obj.data || obj.list || obj.items)) || []);
+    return { items: maybe(json), ok: true };
+  };
+
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const { at, rt } = await ensureTokens();
+      // Web uses GET /notification returning { notifications }
+      const res = await fetch(`${API_BASE}/notification`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at}; refresh_token=${rt}`, 'Authorization': at ? `Bearer ${at}` : '' },
+      });
+      const bodyText = await res.text();
+      if (!res.ok) {
+        console.warn('[Header] notif fetch failed', `${API_BASE}/notification`, res.status, res.statusText, bodyText?.slice(0, 200));
+        return; // keep existing state
+      }
+      let json = null; try { json = bodyText ? JSON.parse(bodyText) : null; } catch { json = null; }
+      const rows = Array.isArray(json?.notifications) ? json.notifications : [];
+      // Filter last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const filtered = rows.filter(row => {
+        const createdAt = new Date(row.createdAt || row.created_at || 0);
+        return createdAt >= thirtyDaysAgo;
+      });
+      // Map and sort newest first
+      const mapped = mapRows(filtered).sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tb - ta;
+      });
+      setNotifications(mapped);
+      setUnreadCount(mapped.filter(x => !x.read).length);
+    } catch (e) {
+      console.warn('[Header] notif list error', e?.message || e);
+    }
+  }, [ensureTokens]);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
+  // Mirror messages screen behavior: refetch when parent screen gains focus
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchNotifications();
+      return () => {};
+    }, [fetchNotifications])
+  );
+
+  // Refresh when user opens the dropdown (ensures latest on mobile)
+  useEffect(() => {
+    if (notifVisible) {
+      fetchNotifications();
+    }
+  }, [notifVisible, fetchNotifications]);
+
+  const markAllRead = useCallback(async () => {
+    try {
+      const { at, rt } = await ensureTokens();
+      await fetch(`${API_BASE}/notification/mark-all-read`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'Cookie': `access_token=${at}; refresh_token=${rt}`, 'Authorization': at ? `Bearer ${at}` : '' },
+      });
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+    } catch {}
+  }, [ensureTokens]);
+
+  useEffect(() => {
+    let socket;
+    let mounted = true;
+    const setup = async () => {
+      try {
+        const { at, rt, uid } = await ensureTokens();
+        if (!uid) return;
+        socket = io(API_ORIGIN, { transports: ['websocket'], withCredentials: true, query: { access_token: at, refresh_token: rt } });
+        socket.on('connect', () => { socket.emit('join', uid); });
+        const onNew = (payload) => {
+          if (!mounted || !payload) return;
+          const n = payload.notification || payload;
+          const item = {
+            id: n.id || String(Date.now()),
+            title: n.title || n.type || 'Notification',
+            message: n.message || n.body || n.content || '',
+            createdAt: n.createdAt || n.created_at || new Date().toISOString(),
+            read: false,
+          };
+          setNotifications(prev => [item, ...prev]);
+          setUnreadCount(c => c + 1);
+        };
+        socket.on('notification:new', onNew);
+        socket.on('notifications:new', onNew);
+        socket.on('notification', onNew);
+        socket.on('notification:update', () => fetchNotifications());
+      } catch (e) {
+        console.warn('[Header] socket setup error', e?.message || e);
+      }
+    };
+    setup();
+    return () => {
+      mounted = false;
+      try { if (socket) { socket.removeAllListeners(); socket.disconnect(); } } catch {}
+    };
+  }, [ensureTokens]);
 
   return (
     <View style={styles.wrapper}>
@@ -69,24 +242,28 @@ const Header = ({ title, showSearch }) => {
               onPress={() => setNotifVisible(!notifVisible)}
             >
               <Ionicons name="notifications-outline" size={24} color="black" />
+              {unreadCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : String(unreadCount)}</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             {/* Notification dropdown */}
             {notifVisible && (
               <View style={styles.notifDropdown}>
                 <ScrollView>
-                  <Text style={styles.notifItem}>
-                    <Text style={styles.bold}>Transaction Alert</Text>{"\n"}
-                    Your payment of M1000 for “The Mountains” was successful on 02/14/24.
-                  </Text>
-                  <Text style={styles.notifItem}>
-                    <Text style={styles.bold}>Auction Reminder</Text>{"\n"}
-                    14:24 PM - Place your bid for “Golden Silence” closing in 04:50:23.
-                  </Text>
-                  <Text style={styles.notifItem}>
-                    <Text style={styles.bold}>Event Reminder</Text>{"\n"}
-                    16:36 PM - Don’t miss “Art Celebration” on 04/08/24 at Lucena, City.
-                  </Text>
+                  {notifications.length === 0 ? (
+                    <Text style={styles.notifItem}>No notifications</Text>
+                  ) : (
+                    notifications.map(n => (
+                      <Text key={n.id} style={styles.notifItem}>
+                        <Text style={styles.bold}>{n.title}</Text>{"\n"}
+                        {n.message}
+                        {n.createdAt ? `\n${formatTime(n.createdAt)}` : ''}
+                      </Text>
+                    ))
+                  )}
                 </ScrollView>
               </View>
             )}
