@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Header from '../components/Header';
 import { supabase } from "../../supabase/supabaseClient";
+import io from 'socket.io-client';
 
 const API_BASE = "http://192.168.100.83:3000/api";
 const API_ORIGIN = API_BASE.replace(/\/api$/, "");
@@ -159,13 +160,17 @@ const ViewMessageScreen = () => {
       if (!res.ok) return;
       const json = await res.json();
       const rows = Array.isArray(json?.messages) ? json.messages : [];
-      const mapped = rows.map((m) => ({
-        id: m.id || m.messageId || String(m.created_at || Math.random()),
-        text: m.content || '',
-        sender: m.senderId === uid ? 'me' : 'other',
-        avatar: m.senderId === meId ? null : partnerAvatar,
-        createdAt: m.created_at || null,
-      }));
+      const effectiveUid = uid || meId;
+      const mapped = rows.map((m) => {
+        const isMe = m.senderId === effectiveUid;
+        return {
+          id: m.id || m.messageId || String(m.created_at || Math.random()),
+          text: m.content || '',
+          sender: isMe ? 'me' : 'other',
+          avatar: isMe ? null : partnerAvatar,
+          createdAt: m.created_at || null,
+        };
+      });
       setMessages(mapped);
     } catch (e) {
       setMessages([]);
@@ -186,18 +191,82 @@ const ViewMessageScreen = () => {
     setLoading(true);
     try {
       const { at, rt, uid } = await loadSession();
-      await fetchConversationMeta(at, rt);
-      await fetchMessages(at, rt, uid);
-      await markRead(at, rt);
+      await Promise.all([
+        fetchConversationMeta(at, rt),
+        fetchMessages(at, rt, uid),
+      ]);
+      // Fire-and-forget mark as read to avoid blocking UI
+      markRead(at, rt);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Clear previous conversation immediately to avoid showing old messages
+    setMessages([]);
+    setPartnerId(null);
+    setPartnerName(initialName || '');
+    setPartnerAvatar(null);
     refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
+
+  // Realtime via Socket.IO: join user room and listen for new messages
+  useEffect(() => {
+    let socket;
+    let mounted = true;
+    const setup = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const uid = data?.session?.user?.id;
+        if (!uid) return;
+        socket = io(API_ORIGIN, { transports: ['websocket'], withCredentials: true });
+        socket.on('connect', () => {
+          socket.emit('join', uid);
+        });
+        // When a new message arrives
+        socket.on('message:new', (payload) => {
+          try {
+            if (!mounted) return;
+            if (!payload) return;
+            const cid = String(payload.conversationId || '');
+            if (String(conversationId) !== cid) return;
+            const m = payload.message || payload;
+            const isMe = m.senderId === (meId || uid);
+            setMessages(prev => ([
+              ...prev,
+              {
+                id: m.id || String(Date.now()),
+                text: m.content || '',
+                sender: isMe ? 'me' : 'other',
+                avatar: isMe ? null : (m.senderAvatar || partnerAvatar),
+                createdAt: m.createdAt || m.created_at || new Date().toISOString(),
+              }
+            ]));
+          } catch {}
+        });
+        // If a remote update indicates we should refetch
+        socket.on('conversation:updated', (payload) => {
+          try {
+            if (!mounted) return;
+            const cid = String(payload?.conversationId || '');
+            if (String(conversationId) !== cid) return;
+            // Soft refresh to ensure ordering/read status
+            (async () => {
+              const { at, rt, uid: u } = await loadSession();
+              await fetchMessages(at, rt, u);
+            })();
+          } catch {}
+        });
+      } catch {}
+    };
+    setup();
+    return () => {
+      mounted = false;
+      try { if (socket) { socket.removeAllListeners(); socket.disconnect(); } } catch {}
+    };
+  }, [API_ORIGIN, conversationId, partnerAvatar, meId]);
 
   // Always keep scrolled to latest when messages change (single source of truth)
   useEffect(() => {
@@ -274,6 +343,7 @@ const ViewMessageScreen = () => {
           <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
             <View style={{ flex: 1 }}>
               <FlatList
+                key={String(conversationId)}
                 ref={flatListRef}
                 data={messages}
                 keyExtractor={(item) => item.id}
@@ -298,6 +368,7 @@ const ViewMessageScreen = () => {
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={{ flex: 1 }}>
             <FlatList
+              key={String(conversationId)}
               ref={flatListRef}
               data={messages}
               keyExtractor={(item) => item.id}
