@@ -14,6 +14,8 @@ import {
   Share,
 } from 'react-native';
 import Header from '../components/Header'; // Import the reusable Header
+import AndroidFooterSpacer from '../components/Footer';
+
 import { supabase } from "../../supabase/supabaseClient";
 import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -441,6 +443,7 @@ const ViewEventsScreen = () => {
           </View>
         </View>
       </Modal>
+      <AndroidFooterSpacer />
     </SafeAreaView>
   );
 };
