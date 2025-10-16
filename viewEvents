@@ -23,7 +23,7 @@ const API_BASE = "http://192.168.18.22:3000/api";
 
 const ViewEventsScreen = () => {
   const [zoomImage, setZoomImage] = useState(null); // State for full-screen image
-  const { eventId } = useLocalSearchParams();
+  const { eventId, from } = useLocalSearchParams();
   const router = useRouter();
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -37,13 +37,33 @@ const ViewEventsScreen = () => {
   const [pError, setPError] = useState(null);
   const [removingId, setRemovingId] = useState(null);
 
-  // Ensure Android hardware back goes to Events screen
+  // Smart back navigation depending on stack or origin
+  const goBackSmart = React.useCallback(() => {
+    // 1) Respect explicit origin first
+    if (from === 'events') {
+      router.replace('/(drawer)/events');
+      return true;
+    }
+    if (from === 'home') {
+      router.replace('/(drawer)/home');
+      return true;
+    }
+    // 2) Fallback to stack back if possible
+    try {
+      if (router.canGoBack && router.canGoBack()) {
+        router.back();
+        return true;
+      }
+    } catch {}
+    // 3) Safe default
+    router.replace('/(drawer)/events');
+    return true;
+  }, [router, from]);
+
+  // Ensure Android hardware back follows smart behavior
   useFocusEffect(
     React.useCallback(() => {
-      const onBackPress = () => {
-        router.replace('/(drawer)/events');
-        return true; // consume the event
-      };
+      const onBackPress = () => goBackSmart();
       const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       // Ensure when this screen is focused, it starts at the top
       // Delay slightly to allow layout/content to settle
@@ -51,7 +71,7 @@ const ViewEventsScreen = () => {
         scrollRef.current?.scrollTo({ y: 0, animated: false });
       }, 0);
       return () => sub.remove();
-    }, [router])
+    }, [goBackSmart])
   );
 
   useEffect(() => {
