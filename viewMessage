@@ -44,6 +44,7 @@ const ViewMessageScreen = () => {
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
   const keyboardHeight = useRef(new Animated.Value(0)).current;
+  const [kbHeight, setKbHeight] = useState(0); // numeric keyboard height for layout spacing (Android)
 
   const formatTitle = (name) => {
     if (!name) return 'Message';
@@ -72,6 +73,7 @@ const ViewMessageScreen = () => {
           duration: 250,
           useNativeDriver: false,
         }).start();
+        setKbHeight(e.endCoordinates.height || 0);
       });
       const hideSub = Keyboard.addListener('keyboardDidHide', () => {
         Animated.timing(keyboardHeight, {
@@ -79,6 +81,7 @@ const ViewMessageScreen = () => {
           duration: 250,
           useNativeDriver: false,
         }).start();
+        setKbHeight(0);
       });
 
       return () => {
@@ -455,7 +458,7 @@ const ViewMessageScreen = () => {
             ListHeaderComponent={
               <View>
                 <AndroidFooterSpacer />
-                <View style={{ height: 20 }} />
+                <View style={{ height: (kbHeight ? kbHeight : 0) + 20 }} />
               </View>
             }
             refreshControl={
