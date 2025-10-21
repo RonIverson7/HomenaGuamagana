@@ -1,25 +1,12 @@
 import React, { useState, useCallback, useEffect } from "react";
-import {
-  View,
-  Text,
-  Image,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Modal,
-  TextInput,
-  Platform,
-  KeyboardAvoidingView,
-  TouchableWithoutFeedback,
-  Keyboard,
-  Alert,
-} from "react-native";
+import { View, Text, Image, StyleSheet, TouchableOpacity, ScrollView, Modal, TextInput, Platform, KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Alert, RefreshControl, SafeAreaView } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import Header from "../components/Header";
 import Icon from "react-native-vector-icons/FontAwesome";
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from "../../supabase/supabaseClient";
 
 
@@ -71,6 +58,7 @@ export default function ProfileScreen() {
   const [artLikesCount, setArtLikesCount] = useState(0);
   const [artUserLiked, setArtUserLiked] = useState(false);
   const [artNewComment, setArtNewComment] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   // Apply as Artist modal state
   const [applyModalVisible, setApplyModalVisible] = useState(false);
@@ -385,21 +373,28 @@ export default function ProfileScreen() {
         rt = data?.session?.refresh_token || rt;
       }
 
+      // Build multipart form data to mirror the web submission to admin
       const fd = new FormData();
+      fd.append('requestType', 'artist_verification');
       fd.append('firstName', String(appFirstName));
-      fd.append('middleInitial', String(appMiddleInitial));
+      fd.append('midInit', String(appMiddleInitial || ''));
       fd.append('lastName', String(appLastName));
       fd.append('phone', String(appPhone));
       fd.append('age', String(appAge));
       fd.append('sex', String(appSex));
       fd.append('birthdate', new Date(appBirthdate).toISOString());
       fd.append('address', String(appAddress));
-      // files
-      fd.append('validId', { uri: appValidIdImage.uri, name: 'valid_id.jpg', type: 'image/jpeg' });
-      fd.append('selfie', { uri: appSelfieImage.uri, name: 'selfie.jpg', type: 'image/jpeg' });
+      // Optional fields to match web (empty if not used in RN UI)
+      fd.append('portfolio', '');
+      fd.append('bio', '');
+      // Consent required by web flow; RN UI has no toggle, so set true to match web behavior
+      fd.append('consent', 'true');
+      // Files must be under field names 'file' and 'file2' as in the web app
+      fd.append('file', { uri: appValidIdImage.uri, name: 'valid_id.jpg', type: 'image/jpeg' });
+      fd.append('file2', { uri: appSelfieImage.uri, name: 'selfie.jpg', type: 'image/jpeg' });
 
-      const endpoint = `${API_BASE}/artist/apply`;
-      console.log('[profile.js] Submitting artist application to:', endpoint);
+      const endpoint = `${API_BASE}/request/registerAsArtist`;
+      console.log('[profile.js] Submitting artist application to (admin/web route):', endpoint);
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
@@ -409,6 +404,8 @@ export default function ProfileScreen() {
       console.log('[profile.js] Application response:', res.status, bodyText);
       if (!res.ok) throw new Error(bodyText || 'Application failed');
 
+      // Trigger existing refresh logic to update profile/gallery state
+      try { await onRefresh(); } catch (_) {}
       Alert.alert('Submitted', 'Your application has been submitted.');
       setApplyModalVisible(false);
     } catch (e) {
@@ -633,6 +630,26 @@ export default function ProfileScreen() {
     }, [role, accessToken, refreshToken])
   );
 
+  // Pull to refresh handler
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const r = String(role || '').toLowerCase();
+      if (r === 'artist' || r === 'admin') {
+        await Promise.all([
+          fetchProfile(accessToken, refreshToken),
+          fetchGallery(accessToken, refreshToken)
+        ]);
+      } else {
+        await fetchProfile(accessToken, refreshToken);
+      }
+    } catch (err) {
+      console.error('Refresh error:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -734,8 +751,19 @@ export default function ProfileScreen() {
 
 
   return (
-    <ScrollView style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <Header title="Profile" showSearch={false} />
+      <ScrollView 
+        style={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#000']} // Android
+            tintColor="#000" // iOS
+          />
+        }
+      >
 
 
       {/* Profile Section */}
@@ -848,7 +876,12 @@ export default function ProfileScreen() {
         </View>
 
 
-        <Text style={styles.name}>{username || "Username"}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: -30 }}>
+          <Text style={[styles.name, { marginTop: 0 }]}>{username || "Username"}</Text>
+          {(String(role || '').toLowerCase() === 'artist' || String(role || '').toLowerCase() === 'admin') && (
+            <Ionicons name="checkmark-circle" size={20} color="#1DA1F2" style={{ marginLeft: 6 }} />
+          )}
+        </View>
         <Text style={styles.detail}>Sex: {sex || "Not set"}</Text>
         <Text style={styles.detail}>Birthdate: {formattedDate || "Not set"}</Text>
         <Text style={styles.detail}>Address: {address}</Text>
@@ -919,7 +952,7 @@ export default function ProfileScreen() {
           <View style={{ width: '90%', maxHeight: '85%', backgroundColor: '#fff', borderRadius: 12, overflow: 'hidden' }}>
             {/* Explicit close button */}
             <TouchableOpacity onPress={() => setSelectedArt(null)} style={styles.modalCloseButton}>
-              <Icon name="close" size={20} color="#fff" />
+              <Ionicons name="close" size={24} color="white" />
             </TouchableOpacity>
             {/* Changed this block to ScrollView for vertical scroll */}
             <ScrollView
@@ -1225,13 +1258,15 @@ export default function ProfileScreen() {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#fff" },
+  scrollContent: { flex: 1 },
   profileSection: { alignItems: "center", marginTop: 10, padding: 0 },
   backgroundImage: {
     width: "100%",
@@ -1351,7 +1386,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   saveButton: {
-    backgroundColor: "black",
+    backgroundColor: "#A68C7B",
     paddingVertical: 8,
     paddingHorizontal: 25,
     borderRadius: 20,
