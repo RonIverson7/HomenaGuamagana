@@ -28,6 +28,9 @@ const HomeScreen = () => {
   const [role, setRole] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [interestsModalVisible, setInterestsModalVisible] = useState(false);
+  const [selectedInterests, setSelectedInterests] = useState([]);
+  const [hasArtPreferences, setHasArtPreferences] = useState(false);
 
 
   const [commentModalVisible, setCommentModalVisible] = useState(false);
@@ -65,7 +68,7 @@ const HomeScreen = () => {
 
 
   const router = useRouter();
-  const API_BASE = "http://192.168.18.22:3000/api";
+  const API_BASE = "http://192.168.100.83:3000/api";
 
 
 
@@ -123,6 +126,20 @@ const HomeScreen = () => {
         } else {
           setProfileModalVisible(false);
         }
+
+        const prefKeys = [
+          'classicalArt','contemporaryArt','impressionist','abstractArt','sculpture','photography',
+          'digitalArt','streetArt','minimalist','surrealist','landscape','portrait','miniature',
+          'expressionist','realism','conceptual'
+        ];
+        const hasPrefs = prefKeys.some((k) => p && Object.prototype.hasOwnProperty.call(p, k) && p[k] === true);
+        setHasArtPreferences(!!hasPrefs);
+        if ((!(!p.username || !p.firstName || !p.lastName))) {
+          if (!hasPrefs) {
+            // Defer to the authoritative status endpoint like the web does
+            await fetchArtPreferenceStatus(at, rt);
+          }
+        }
       } else {
         // No profile data found - require completion
         setProfileModalVisible(true);
@@ -166,6 +183,32 @@ const HomeScreen = () => {
     } catch (error) {
       console.error("[home.js] Error fetching role:", error?.message || error);
       setRole(null);
+    }
+  };
+
+  // Check art preference setup status (web parity)
+  const fetchArtPreferenceStatus = async (at, rt) => {
+    try {
+      const res = await fetch(`${API_BASE}/profile/artPreferenceStatus`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          'Cookie': `access_token=${at}; refresh_token=${rt}`,
+        },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch art preference status: ${res.status}`);
+      const bodyText = await res.text();
+      let data = null;
+      try { data = bodyText ? JSON.parse(bodyText) : null; } catch { data = bodyText; }
+      const status = !!(
+        (typeof data === 'object' && (data?.preferenceStatus ?? data?.status ?? data?.data?.preferenceStatus))
+      );
+      setHasArtPreferences(status);
+      if (!status) setInterestsModalVisible(true);
+    } catch (e) {
+      console.log('[home.js] fetchArtPreferenceStatus error:', e?.message || e);
+      // If the status check fails, be conservative and show modal only if we don't already have prefs
+      if (!hasArtPreferences) setInterestsModalVisible(true);
     }
   };
 
@@ -223,11 +266,15 @@ const HomeScreen = () => {
           setProfileModalVisible(false);
           return true;
         }
+        if (interestsModalVisible) {
+          setInterestsModalVisible(false);
+          return true;
+        }
         return false; // allow default behavior
       };
       const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => sub.remove();
-    }, [selectedImage, selectedImages.length, commentModalVisible, modalVisible, profileModalVisible])
+    }, [selectedImage, selectedImages.length, commentModalVisible, modalVisible, profileModalVisible, interestsModalVisible])
   );
 
 
@@ -594,6 +641,9 @@ const HomeScreen = () => {
       // if profile is complete fetchUserProfile will setProfileModalVisible(false)
       // but ensure it's closed here as well for immediate UX
       setProfileModalVisible(false);
+      if (!hasArtPreferences) {
+        setInterestsModalVisible(true);
+      }
     }
   };
 
@@ -850,7 +900,16 @@ const HomeScreen = () => {
 
 
       {(role === "artist" || role === "admin") && (
-        <TouchableOpacity style={styles.postOverlayBox} onPress={() => setModalVisible(true)}>
+        <TouchableOpacity
+          style={styles.postOverlayBox}
+          onPress={() => {
+            if (!hasArtPreferences) {
+              setInterestsModalVisible(true);
+              return;
+            }
+            setModalVisible(true);
+          }}
+        >
           {/* Show user's profile avatar if available; fallback keeps same size */}
   
           <Ionicons name="create-outline" size={24} color="#555" style={{ marginRight: 8 }} />
@@ -962,6 +1021,131 @@ const HomeScreen = () => {
       </Modal>
 
 
+      <Modal visible={interestsModalVisible} animationType="fade" transparent>
+        <TouchableWithoutFeedback>
+          <View style={styles.modalOverlay}>
+            <View style={styles.interestsBox}>
+              <Text style={styles.modalTitle}>Choose Your Art Interests</Text>
+              <Text style={{ marginBottom: 10, color: '#555' }}>Pick a few to personalize your feed</Text>
+              <View style={styles.interestsGrid}>
+                {[
+                  { id: 'classical', name: 'Classical Art', color: '#111' },
+                  { id: 'contemporary', name: 'Contemporary', color: '#6b21a8' },
+                  { id: 'impressionist', name: 'Impressionist', color: '#b45309' },
+                  { id: 'abstract', name: 'Abstract', color: '#047857' },
+                  { id: 'sculpture', name: 'Sculpture', color: '#1f2937' },
+                  { id: 'photography', name: 'Photography', color: '#0ea5e9' },
+                  { id: 'digital', name: 'Digital Art', color: '#7c3aed' },
+                  { id: 'street', name: 'Street Art', color: '#f59e0b' },
+                  { id: 'minimalist', name: 'Minimalist', color: '#4b5563' },
+                  { id: 'surrealist', name: 'Surrealist', color: '#ef4444' },
+                  { id: 'landscape', name: 'Landscape', color: '#10b981' },
+                  { id: 'portrait', name: 'Portrait', color: '#60a5fa' },
+                  { id: 'miniature', name: 'Miniature', color: '#f59e0b' },
+                  { id: 'expressionist', name: 'Expressionist', color: '#ef4444' },
+                  { id: 'realism', name: 'Realism', color: '#10b981' },
+                  { id: 'conceptual', name: 'Conceptual', color: '#0ea5e9' },
+                ].map((cat) => {
+                  const selected = selectedInterests.includes(cat.id);
+                  return (
+                    <TouchableOpacity
+                      key={cat.id}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setSelectedInterests((prev) =>
+                          prev.includes(cat.id)
+                            ? prev.filter((x) => x !== cat.id)
+                            : [...prev, cat.id]
+                        );
+                      }}
+                      style={[styles.categoryCard, selected && { borderColor: cat.color, backgroundColor: '#f9fafb' }]}
+                    >
+                      <View style={[styles.categoryDot, { backgroundColor: cat.color }]} />
+                      <Text style={[styles.categoryText, selected && { color: cat.color }]} numberOfLines={1}>
+                        {cat.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {!!selectedInterests.length && (
+                <Text style={{ marginTop: 6, marginBottom: 10, color: '#111', fontWeight: '600' }}>
+                  {selectedInterests.length} selected
+                </Text>
+              )}
+              <TouchableOpacity
+                style={[styles.saveButton, { alignSelf: 'stretch', opacity: selectedInterests.length ? 1 : 0.5 }]}
+                disabled={!selectedInterests.length}
+                onPress={async () => {
+                  const preferences = {
+                    classicalArt: selectedInterests.includes('classical'),
+                    contemporaryArt: selectedInterests.includes('contemporary'),
+                    impressionist: selectedInterests.includes('impressionist'),
+                    abstractArt: selectedInterests.includes('abstract'),
+                    sculpture: selectedInterests.includes('sculpture'),
+                    photography: selectedInterests.includes('photography'),
+                    digitalArt: selectedInterests.includes('digital'),
+                    streetArt: selectedInterests.includes('street'),
+                    minimalist: selectedInterests.includes('minimalist'),
+                    surrealist: selectedInterests.includes('surrealist'),
+                    landscape: selectedInterests.includes('landscape'),
+                    portrait: selectedInterests.includes('portrait'),
+                    miniature: selectedInterests.includes('miniature'),
+                    expressionist: selectedInterests.includes('expressionist'),
+                    realism: selectedInterests.includes('realism'),
+                    conceptual: selectedInterests.includes('conceptual'),
+                  };
+                  try {
+                    console.log('[home.js] saveArtPreferences -> URL:', `${API_BASE}/gallery/saveArtPreferences`);
+                    console.log('[home.js] saveArtPreferences -> tokens present:', !!accessToken, !!refreshToken);
+                    console.log('[home.js] saveArtPreferences -> payload:', preferences);
+                    const res = await fetch(`${API_BASE}/profile/saveArtPreferences`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
+                      },
+                      credentials: 'include',
+                      body: JSON.stringify(preferences),
+                    });
+                    console.log('[home.js] saveArtPreferences -> response status:', res.status);
+                    if (!res.ok) {
+                      let errMsg = `Failed to save preferences (${res.status})`;
+                      try {
+                        const txt = await res.text();
+                        try {
+                          const j = txt ? JSON.parse(txt) : null;
+                          if (j && (j.message || j.error)) errMsg = `${errMsg}: ${j.message || j.error}`;
+                          else if (txt) errMsg = `${errMsg}: ${txt}`;
+                        } catch {
+                          if (txt) errMsg = `${errMsg}: ${txt}`;
+                        }
+                      } catch {}
+                      throw new Error(errMsg);
+                    }
+                    console.log('[home.js] saveArtPreferences -> success');
+                    setHasArtPreferences(true);
+                    setInterestsModalVisible(false);
+                  } catch (e) {
+                    console.log('[home.js] saveArtPreferences error:', e?.message || e);
+                    alert(e?.message || 'Failed to save preferences');
+                  }
+                }}
+              >
+                <Text style={styles.saveButtonText}>Continue</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelButton, { alignSelf: 'stretch', marginTop: 8 }]}
+                onPress={() => setInterestsModalVisible(false)}
+              >
+                <Text style={styles.cancelButtonText}>Maybe later</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+
+
       {/* Create Post modal */}
       <Modal visible={modalVisible} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
@@ -1023,7 +1207,7 @@ const HomeScreen = () => {
 
 
       {/* Comments Modal */}
-      <Modal visible={commentModalVisible} animationType="slide">
+      <Modal visible={commentModalVisible} animationType="slide" onRequestClose={() => setCommentModalVisible(false)}>
         <SafeAreaView style={styles.container}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1351,6 +1535,43 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     elevation: 5,
     alignItems: "center",
+  },
+  interestsBox: {
+    backgroundColor: "#fff",
+    padding: 20,
+    borderRadius: 15,
+    elevation: 6,
+    width: '90%',
+    maxWidth: 420,
+    alignItems: 'center',
+  },
+  interestsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  categoryCard: {
+    width: '48%',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoryDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  categoryText: {
+    color: '#111827',
+    fontWeight: '600',
+    flexShrink: 1,
   },
   modalTitle: {
     fontSize: 18,
