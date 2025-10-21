@@ -7,7 +7,8 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import Header from "../components/Header";
 import Icon from "react-native-vector-icons/FontAwesome";
 import { supabase } from "../../supabase/supabaseClient";
-const API_BASE = "http://192.168.18.22:3000/api";
+
+const API_BASE = "http://192.168.100.83:3000/api";
 const API_ORIGIN = API_BASE.replace(/\/api$/, "");
 
 export default function ProfileScreen() {
@@ -88,12 +89,12 @@ export default function ProfileScreen() {
 
   const fetchViewedGallery = async (at, rt) => {
     try {
-      if (!viewedId) return;
+      if (!viewedId) { setGalleryImages([]); return; }
       const res = await fetch(`${API_BASE}/artist/getArts/${encodeURIComponent(viewedId)}`, {
         method: 'GET',
         headers: { Cookie: `access_token=${at || ''}; refresh_token=${rt || ''}` },
       });
-      if (!res.ok) return;
+      if (!res.ok) { setGalleryImages([]); return; }
       const data = await res.json();
       const list = Array.isArray(data) ? data : (data?.arts || data || []);
       const items = list.map((a) => {
@@ -326,6 +327,7 @@ export default function ProfileScreen() {
         setAccessToken(at);
         setRefreshToken(rt);
         if (isViewingOther && at && rt) {
+          setGalleryImages([]);
           // Load selected artist by id
           await fetchViewedProfile(at, rt);
           await fetchViewedGallery(at, rt);
