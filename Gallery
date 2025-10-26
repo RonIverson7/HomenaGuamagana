@@ -1,34 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, ScrollView, ActivityIndicator, FlatList, RefreshControl, Modal, TextInput, KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Alert, Platform } from 'react-native';
+import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, ScrollView, ActivityIndicator, FlatList, RefreshControl, Modal, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from "../../supabase/supabaseClient";
 import Header from '../components/Header';
-import AndroidFooterSpacer from '../components/Footer';
 import * as ImagePicker from 'expo-image-picker';
-const API_BASE = "http://192.168.100.83:3000/api"
+import AndroidFooterSpacer from '../components/Footer';
+const API_BASE = "http://192.168.100.83:3000/api";
+
+
 const API_ORIGIN = API_BASE.replace(/\/api$/, "");
 
 const GalleryScreen = () => {
   const navigation = useNavigation();
   const router = useRouter();
   const [categories, setCategories] = useState([]);
-  const [selectedCategories, setSelectedCategories] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState('all');
   const [curatedArtworks, setCuratedArtworks] = useState([]);
   const [recentlyAdded, setRecentlyAdded] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [totalArtworks, setTotalArtworks] = useState(0);
   const [role, setRole] = useState(null);
-  const [accessToken, setAccessToken] = useState(null);
-  const [refreshToken, setRefreshToken] = useState(null);
-  const [artModalVisible, setArtModalVisible] = useState(false);
-  const [artImages, setArtImages] = useState([]); // [{ uri }]
-  const [artTitle, setArtTitle] = useState("");
-  const [artDescription, setArtDescription] = useState("");
-  const [artMedium, setArtMedium] = useState("");
-  const [artCategories, setArtCategories] = useState([]); // array of category names
-  const [artUploading, setArtUploading] = useState(false);
+  const [uploadModalVisible, setUploadModalVisible] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [newArtwork, setNewArtwork] = useState({
+    title: '',
+    medium: '',
+    description: '',
+    category: '',
+    image: null,
+  });
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [userPreferences, setUserPreferences] = useState([]);
 
   const loadSession = async () => {
     const { data } = await supabase.auth.getSession();
@@ -37,28 +41,6 @@ const GalleryScreen = () => {
       rt: data?.session?.refresh_token || null,
     };
   };
-
-  useEffect(() => {
-    const init = async () => {
-      const { at, rt } = await loadSession();
-      setAccessToken(at);
-      setRefreshToken(rt);
-      try {
-        const res = await fetch(`${API_BASE}/users/role`, {
-          method: 'GET',
-          credentials: 'include',
-          headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
-        });
-        const bodyText = await res.text();
-        let data = null; try { data = bodyText ? JSON.parse(bodyText) : null; } catch { data = bodyText; }
-        const resolvedRole = typeof data === 'string' ? data : (data?.role || data?.user?.role || null);
-        setRole(resolvedRole);
-      } catch (e) {
-        setRole(null);
-      }
-    };
-    init();
-  }, []);
 
   const fetchCategories = async () => {
     try {
@@ -116,15 +98,53 @@ const GalleryScreen = () => {
     }
   };
 
+  const fetchUserPreferences = async () => {
+    try {
+      const { at, rt } = await loadSession();
+      const res = await fetch(`${API_BASE}/gallery/getArtPreference`, {
+        method: 'GET',
+        headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.preferences && Array.isArray(data.preferences)) {
+          setUserPreferences(data.preferences);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching user preferences:', error);
+    }
+  };
+
+  const fetchUserRole = async () => {
+    try {
+      const { at, rt } = await loadSession();
+      if (!at || !rt) return;
+      const res = await fetch(`${API_BASE}/users/role`, {
+        method: 'GET',
+        headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRole(data.role || data);
+      }
+    } catch (error) {
+      console.error('Error fetching user role:', error);
+    }
+  };
+
   useEffect(() => {
     fetchCategories();
     fetchArtworks();
+    fetchUserRole();
+    fetchUserPreferences();
   }, []);
 
-  const handleCategoryChange = (newCategories) => {
-    setSelectedCategories(newCategories);
+  const handleCategoryChange = (categoryField, categoryName) => {
+    setSelectedCategory(categoryField);
     setLoading(true);
-    const filterValue = newCategories.length === 0 ? 'all' : newCategories.join(',');
+    // If "All" is selected, send 'all', otherwise send the category name
+    const filterValue = categoryField === 'all' ? 'all' : categoryName;
     fetchArtworks(filterValue);
   };
 
@@ -133,7 +153,7 @@ const GalleryScreen = () => {
     try {
       await Promise.all([
         fetchCategories(),
-        fetchArtworks(selectedCategories.length === 0 ? 'all' : selectedCategories.join(','))
+        fetchArtworks(selectedCategory === 'all' ? 'all' : categories.find(c => c.field === selectedCategory)?.name)
       ]);
     } catch (error) {
       console.error('Refresh error:', error);
@@ -150,12 +170,119 @@ const GalleryScreen = () => {
     return imageUrl.startsWith('http') ? imageUrl : `${API_ORIGIN}${imageUrl}`;
   };
 
+  const pickImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+    });
+
+    if (!result.canceled) {
+      setNewArtwork({ ...newArtwork, image: result.assets[0] });
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!newArtwork.title.trim()) {
+      Alert.alert('Error', 'Please enter a title');
+      return;
+    }
+    if (!newArtwork.description.trim()) {
+      Alert.alert('Error', 'Please enter a description');
+      return;
+    }
+    if (!newArtwork.medium.trim()) {
+      Alert.alert('Error', 'Please enter a medium');
+      return;
+    }
+    if (!newArtwork.category) {
+      Alert.alert('Error', 'Please select a category');
+      return;
+    }
+    if (!newArtwork.image) {
+      Alert.alert('Error', 'Please select an image');
+      return;
+    }
+
+    try {
+      setUploading(true);
+      const { at, rt } = await loadSession();
+      
+      // Create FormData for image upload
+      const formData = new FormData();
+      formData.append('title', newArtwork.title.trim());
+      formData.append('medium', newArtwork.medium.trim());
+      formData.append('description', newArtwork.description.trim());
+      // Backend expects 'categories' as a JSON array string
+      formData.append('categories', JSON.stringify([newArtwork.category]));
+      
+      // Add image file - backend expects 'images' field
+      const imageUri = Platform.OS === 'android' ? newArtwork.image.uri : newArtwork.image.uri.replace('file://', '');
+      const filename = imageUri.split('/').pop();
+      const match = /\.([\w]+)$/.exec(filename);
+      const type = match ? `image/${match[1]}` : 'image/jpeg';
+      
+      formData.append('images', {
+        uri: imageUri,
+        name: filename,
+        type: type,
+      });
+
+      console.log('Uploading to:', `${API_BASE}/gallery/upload`);
+      console.log('Form data:', {
+        title: newArtwork.title,
+        medium: newArtwork.medium,
+        description: newArtwork.description,
+        category: newArtwork.category,
+        imageUri: imageUri,
+        filename: filename,
+        type: type,
+      });
+
+      const res = await fetch(`${API_BASE}/gallery/upload`, {
+        method: 'POST',
+        headers: {
+          'Cookie': `access_token=${at}; refresh_token=${rt}`,
+          'Accept': 'application/json',
+        },
+        body: formData,
+      });
+
+      console.log('Response status:', res.status);
+      const responseText = await res.text();
+      console.log('Response text:', responseText);
+
+      if (res.ok) {
+        Alert.alert('Success', 'Artwork uploaded successfully!');
+        setUploadModalVisible(false);
+        setNewArtwork({ title: '', medium: '', description: '', category: '', image: null });
+        await fetchArtworks(selectedCategory === 'all' ? 'all' : categories.find(c => c.field === selectedCategory)?.name);
+        await fetchCategories();
+      } else {
+        let errorMessage = 'Failed to upload artwork';
+        try {
+          const error = JSON.parse(responseText);
+          errorMessage = error.message || error.error || errorMessage;
+        } catch (e) {
+          errorMessage = responseText || errorMessage;
+        }
+        console.error('Upload failed:', errorMessage);
+        Alert.alert('Error', errorMessage);
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      Alert.alert('Error', `Failed to upload artwork: ${error.message}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const renderArtworkCard = (item) => (
     <TouchableOpacity 
       style={styles.card} 
       key={item.id}
       onPress={() => {
-        console.log('Navigating to artwork:', item.id, 'Full item:', item);
         router.push(`/viewGallery?artworkId=${item.id}`);
       }}
     >
@@ -168,91 +295,6 @@ const GalleryScreen = () => {
       <Text style={styles.cardAuthor} numberOfLines={1}>by {item.artist || 'Unknown Artist'}</Text>
     </TouchableOpacity>
   );
-
-  const handleAddArtwork = () => {
-    const r = String(role || '').toLowerCase();
-    if (!(r === 'artist' || r === 'admin')) {
-      Alert.alert('Not allowed', 'Only artists can upload artworks.');
-      return;
-    }
-    setArtImages([]);
-    setArtTitle("");
-    setArtDescription("");
-    setArtMedium("");
-    setArtCategories([]);
-    setArtModalVisible(true);
-  };
-
-  const pickArtworkImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true,
-      selectionLimit: 10,
-      allowsEditing: false,
-      quality: 1,
-    });
-    if (!result.canceled && Array.isArray(result.assets)) {
-      const picked = result.assets.map(a => ({ uri: a.uri }));
-      setArtImages(prev => [...prev, ...picked]);
-    }
-  };
-
-  const uploadArtwork = async () => {
-    try {
-      const at = accessToken, rt = refreshToken;
-      const fd = new FormData();
-      if (Array.isArray(artImages) && artImages.length > 0) {
-        artImages.forEach((img, idx) => {
-          if (img?.uri) {
-            fd.append('image', { uri: img.uri, name: `artwork_${idx + 1}.jpg`, type: 'image/jpeg' });
-          }
-        });
-      }
-      if (artTitle) fd.append('title', String(artTitle));
-      if (artDescription) fd.append('description', String(artDescription));
-      if (artMedium) fd.append('medium', String(artMedium));
-      if (Array.isArray(artCategories) && artCategories.length > 0) {
-        fd.append('categories', artCategories.join(','));
-      }
-      const res = await fetch(`${API_BASE}/gallery/upload`, {
-        method: 'POST',
-        headers: { Cookie: `access_token=${at}; refresh_token=${rt}` },
-        body: fd,
-      });
-      const bodyText = await res.text();
-      if (!res.ok) {
-        let msg = bodyText || 'Upload failed';
-        try { const j = bodyText ? JSON.parse(bodyText) : null; msg = j?.message || j?.error || msg; } catch {}
-        throw new Error(msg);
-      }
-      try {
-        const filterValue = selectedCategories.length === 0 ? 'all' : selectedCategories.join(',');
-        await fetchArtworks(filterValue);
-      } catch {}
-      setArtModalVisible(false);
-      setArtImages([]);
-      setArtTitle("");
-      setArtDescription("");
-      setArtMedium("");
-      setArtCategories([]);
-      Alert.alert('Success', 'Artwork uploaded');
-    } catch (e) {
-      Alert.alert('Upload failed', e?.message || 'Could not upload artwork');
-    }
-  };
-
-  const submitArtwork = async () => {
-    if (!Array.isArray(artImages) || artImages.length === 0) {
-      Alert.alert('Missing images', 'Please select at least one artwork image.');
-      return;
-    }
-    setArtUploading(true);
-    try {
-      await uploadArtwork();
-    } finally {
-      setArtUploading(false);
-    }
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -274,28 +316,25 @@ const GalleryScreen = () => {
           <Text style={styles.sectionTitle}>Filter Collection</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
             {categories.map((category) => {
-              const isAll = category.name === 'All';
-              const isSelected = isAll ? selectedCategories.length === 0 : selectedCategories.includes(category.name);
-              const onPress = () => {
-                if (isAll) {
-                  handleCategoryChange([]);
-                } else {
-                  let next;
-                  if (selectedCategories.includes(category.name)) {
-                    next = selectedCategories.filter(c => c !== category.name);
-                  } else {
-                    next = [...selectedCategories, category.name];
-                  }
-                  handleCategoryChange(next);
-                }
-              };
+              const isPreferred = userPreferences.includes(category.field) || userPreferences.includes(category.name);
               return (
                 <TouchableOpacity
                   key={category.field}
-                  style={[styles.filterChip, isSelected && styles.filterChipActive]}
-                  onPress={onPress}
+                  style={[
+                    styles.filterChip,
+                    selectedCategory === category.field && styles.filterChipActive,
+                    isPreferred && selectedCategory !== category.field && styles.filterChipPreferred
+                  ]}
+                  onPress={() => handleCategoryChange(category.field, category.name)}
                 >
-                  <Text style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}>
+                  {isPreferred && (
+                    <Ionicons name="star" size={14} color="#FFD700" style={{ marginRight: 4 }} />
+                  )}
+                  <Text style={[
+                    styles.filterChipText,
+                    selectedCategory === category.field && styles.filterChipTextActive,
+                    isPreferred && selectedCategory !== category.field && styles.filterChipTextPreferred
+                  ]}>
                     {category.name} ({category.count || 0})
                   </Text>
                 </TouchableOpacity>
@@ -320,7 +359,7 @@ const GalleryScreen = () => {
                 </Text>
                 <TouchableOpacity 
                   style={styles.emptyButton}
-                  onPress={() => handleCategoryChange([])}
+                  onPress={() => handleCategoryChange('all', 'All')}
                 >
                   <Text style={styles.emptyButtonText}>View All Artworks</Text>
                 </TouchableOpacity>
@@ -361,100 +400,132 @@ const GalleryScreen = () => {
           </>
         )}
       </ScrollView>
-      {(String(role || '').toLowerCase() === 'artist' || String(role || '').toLowerCase() === 'admin') && (
-        <TouchableOpacity style={styles.floatingBtn} onPress={handleAddArtwork} activeOpacity={0.9}>
-          <Text style={styles.floatingBtnText}>+</Text>
+
+      {/* Floating Add Button - Only for Artists */}
+      {role === 'artist' && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => setUploadModalVisible(true)}
+        >
+          <Ionicons name="add" size={28} color="#fff" />
         </TouchableOpacity>
       )}
 
+      {/* Upload Modal */}
       <Modal
-        visible={artModalVisible}
-        animationType="slide"
+        visible={uploadModalVisible}
         transparent
-        presentationStyle="overFullScreen"
-        onRequestClose={() => setArtModalVisible(false)}
+        animationType="slide"
+        onRequestClose={() => setUploadModalVisible(false)}
       >
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
           <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardView}>
-              <View style={styles.modalBox}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Upload Artwork</Text>
-                <ScrollView style={styles.modalScroll} contentContainerStyle={{ paddingBottom: 12 }}>
-
-                <TouchableOpacity onPress={pickArtworkImage} style={styles.imagePicker} activeOpacity={0.8}>
-                  <View style={[styles.selectedImagePreview, styles.placeholderCircle]}>
-                    <Ionicons name="images-outline" size={36} color="#999" />
-                  </View>
-                  <Text style={styles.changePhotoText}>Choose Images</Text>
+                <TouchableOpacity onPress={() => setUploadModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#333" />
                 </TouchableOpacity>
-
-                {Array.isArray(artImages) && artImages.length > 0 && (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.thumbnailsRow}>
-                    {artImages.map((img, idx) => (
-                      <Image key={`${img.uri}-${idx}`} source={img} style={styles.thumbnail} />
-                    ))}
-                  </ScrollView>
-                )}
-
-                <TextInput style={styles.input} placeholder="Title" placeholderTextColor="#999" value={artTitle} onChangeText={setArtTitle} />
-                <TextInput style={styles.input} placeholder="Medium" placeholderTextColor="#999" value={artMedium} onChangeText={setArtMedium} />
-                <TextInput
-                  style={[styles.input, { height: 100, textAlignVertical: 'top' }]}
-                  placeholder="Description"
-                  placeholderTextColor="#999"
-                  multiline
-                  value={artDescription}
-                  onChangeText={setArtDescription}
-                />
-                <View style={{ marginBottom: 8 }}>
-                  <Text style={{ fontSize: 14, color: '#666', marginBottom: 6 }}>Categories</Text>
-                  <View style={styles.modalCategoryGrid}>
-                    {categories.filter(c => c.name !== 'All').map((category) => {
-                      const isSelected = artCategories.includes(category.name);
-                      const onPress = () => {
-                        setArtCategories((prev) => (
-                          prev.includes(category.name)
-                            ? prev.filter(cn => cn !== category.name)
-                            : [...prev, category.name]
-                        ));
-                      };
-                      return (
-                        <View key={`modal-cat-${category.field}`} style={styles.modalCategoryItem}>
-                          <TouchableOpacity
-                            style={[styles.filterChip, styles.modalCategoryChip, isSelected && styles.filterChipActive]}
-                            onPress={onPress}
-                            activeOpacity={0.8}
-                          >
-                            <Text
-                              style={[styles.filterChipText, { textAlign: 'center', alignSelf: 'center' }, isSelected && styles.filterChipTextActive]}
-                              numberOfLines={2}
-                              ellipsizeMode="tail"
-                            >
-                              {category.name}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      );
-                    })}
-                  </View>
-                </View>
-
-                </ScrollView>
-
-                <View style={styles.actionRow}>
-                  <TouchableOpacity style={[styles.actionButton, styles.cancelButton]} onPress={() => setArtModalVisible(false)} disabled={artUploading}>
-                    <Text style={[styles.actionButtonText, { color: '#A68C7B' }]}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.actionButton} onPress={submitArtwork} disabled={artUploading}>
-                    <Text style={styles.actionButtonText}>{artUploading ? 'Uploading...' : 'Upload'}</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
-            </KeyboardAvoidingView>
+
+              <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {/* Image Picker */}
+              <TouchableOpacity style={styles.imagePicker} onPress={pickImage}>
+                {newArtwork.image ? (
+                  <Image source={{ uri: newArtwork.image.uri }} style={styles.pickedImage} />
+                ) : (
+                  <View style={styles.imagePickerPlaceholder}>
+                    <Ionicons name="image-outline" size={48} color="#A68C7B" />
+                    <Text style={styles.imagePickerText}>Tap to select image</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Title Input */}
+              <Text style={styles.inputLabel}>Title *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Enter artwork title"
+                value={newArtwork.title}
+                onChangeText={(text) => setNewArtwork({ ...newArtwork, title: text })}
+              />
+
+              {/* Medium Input */}
+              <Text style={styles.inputLabel}>Medium *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Oil, Digital, Watercolor"
+                value={newArtwork.medium}
+                onChangeText={(text) => setNewArtwork({ ...newArtwork, medium: text })}
+              />
+
+              {/* Description Input */}
+              <Text style={styles.inputLabel}>Description *</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                placeholder="Enter description"
+                value={newArtwork.description}
+                onChangeText={(text) => setNewArtwork({ ...newArtwork, description: text })}
+                multiline
+                numberOfLines={4}
+              />
+
+              {/* Category Selector */}
+              <Text style={styles.inputLabel}>Category *</Text>
+              <TouchableOpacity
+                style={styles.input}
+                onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
+              >
+                <Text style={{ color: newArtwork.category ? '#000' : '#999' }}>
+                  {newArtwork.category || 'Select category'}
+                </Text>
+                <Ionicons
+                  name={showCategoryDropdown ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color="#555"
+                  style={{ position: 'absolute', right: 12, top: 12 }}
+                />
+              </TouchableOpacity>
+              {showCategoryDropdown && (
+                <View style={styles.categoryDropdown}>
+                  <ScrollView style={{ maxHeight: 200 }}>
+                    {categories
+                      .filter(cat => cat.field !== 'all')
+                      .map((cat) => (
+                        <TouchableOpacity
+                          key={cat.field}
+                          style={styles.categoryItem}
+                          onPress={() => {
+                            setNewArtwork({ ...newArtwork, category: cat.name });
+                            setShowCategoryDropdown(false);
+                          }}
+                        >
+                          <Text style={styles.categoryItemText}>{cat.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* Upload Button */}
+              <TouchableOpacity
+                style={[styles.uploadButton, uploading && styles.uploadButtonDisabled]}
+                onPress={handleUpload}
+                disabled={uploading}
+              >
+                <Text style={styles.uploadButtonText}>
+                  {uploading ? 'Uploading...' : 'Upload Artwork'}
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
-        </TouchableWithoutFeedback>
+        </View>
+        </KeyboardAvoidingView>
       </Modal>
-      <AndroidFooterSpacer />
+       <AndroidFooterSpacer />
     </SafeAreaView>
   );
 };
@@ -476,6 +547,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 15,
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#f5f5f5',
@@ -488,6 +561,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#A68C7B',
     borderColor: '#A68C7B',
   },
+  filterChipPreferred: {
+    backgroundColor: '#FFF9E6',
+    borderColor: '#FFD700',
+    borderWidth: 2,
+  },
   filterChipText: {
     fontSize: 14,
     color: '#666',
@@ -495,6 +573,10 @@ const styles = StyleSheet.create({
   filterChipTextActive: {
     color: '#fff',
     fontWeight: '600',
+  },
+  filterChipTextPreferred: {
+    color: '#B8860B',
+    fontWeight: '700',
   },
   cardGrid: {
     flexDirection: 'row',
@@ -598,130 +680,132 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
   },
-  floatingBtn: {
+  fab: {
     position: 'absolute',
-    right: 24,
-    bottom: Platform.OS === 'android' ? 60 : 24,
+    right: 20,
+    bottom: Platform.OS === 'android' ? 60 : 20,
     width: 56,
     height: 56,
     borderRadius: 28,
     backgroundColor: '#A68C7B',
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
     shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
     shadowRadius: 4,
-    elevation: 6,
-  },
-  floatingBtnText: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '800',
-    marginTop: -2,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
   },
-  keyboardView: { width: '100%' },
-  modalBox: {
+  modalContent: {
     backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    width: '100%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 20,
+    fontWeight: 'bold',
     color: '#A68C7B',
-    marginBottom: 12,
+  },
+  modalBody: {
+    padding: 20,
   },
   imagePicker: {
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  selectedImagePreview: {
-    width: 120,
-    height: 120,
-    borderRadius: 12,
-    backgroundColor: '#f0f0f0',
-    marginBottom: 8,
-  },
-  placeholderCircle: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  changePhotoText: {
-    color: '#666',
-    fontSize: 13,
-  },
-  thumbnailsRow: {
-    marginBottom: 10,
-    paddingHorizontal: 12,
-  },
-  thumbnail: {
-    width: 72,
-    height: 72,
-    borderRadius: 8,
-    backgroundColor: '#f0f0f0',
-    marginRight: 8,
-  },
-  modalScroll: {
-    maxHeight: 420,
-  },
-  modalCategoryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -6,
-  },
-  modalCategoryItem: {
-    width: '50%',
-    paddingHorizontal: 6,
-    marginBottom: 8,
-  },
-  modalCategoryChip: {
     width: '100%',
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#A68C7B',
+    borderStyle: 'dashed',
+    marginBottom: 20,
+    overflow: 'hidden',
+  },
+  imagePickerPlaceholder: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    height: 56,
-    paddingHorizontal: 12,
+    backgroundColor: '#f9f9f9',
+  },
+  imagePickerText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: '#A68C7B',
+  },
+  pickedImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
   },
   input: {
     borderWidth: 1,
     borderColor: '#e0e0e0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
+    borderRadius: 8,
+    padding: 12,
     fontSize: 14,
-    color: '#000',
+    marginBottom: 16,
+    backgroundColor: '#fff',
   },
-  actionRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-    marginTop: 8,
+  textArea: {
+    height: 100,
+    textAlignVertical: 'top',
   },
-  actionButton: {
+  uploadButton: {
     backgroundColor: '#A68C7B',
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 10,
-    marginLeft: 10,
+    paddingVertical: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 20,
   },
-  cancelButton: {
+  uploadButtonDisabled: {
+    opacity: 0.6,
+  },
+  uploadButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  categoryDropdown: {
     backgroundColor: '#fff',
     borderWidth: 1,
-    borderColor: '#A68C7B',
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    marginTop: -8,
+    marginBottom: 16,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
-  actionButtonText: {
-    color: '#fff',
+  categoryItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  categoryItemText: {
     fontSize: 14,
-    fontWeight: '700',
+    color: '#333',
   },
 });
 
