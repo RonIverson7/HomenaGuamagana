@@ -6,6 +6,7 @@ import { supabase } from "../../supabase/supabaseClient";
 import Header from '../components/Header';
 import * as ImagePicker from 'expo-image-picker';
 import AndroidFooterSpacer from '../components/Footer';
+
 const API_BASE = "http://192.168.100.83:3000/api";
 
 
@@ -491,7 +492,12 @@ const GalleryScreen = () => {
               </TouchableOpacity>
               {showCategoryDropdown && (
                 <View style={styles.categoryDropdown}>
-                  <ScrollView style={{ maxHeight: 200 }}>
+                  <ScrollView
+                    style={{ maxHeight: 200 }}
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator
+                  >
                     {categories
                       .filter(cat => cat.field !== 'all')
                       .map((cat) => (
