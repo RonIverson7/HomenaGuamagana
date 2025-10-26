@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, ScrollView, TextInput, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, RefreshControl } from 'react-native';
+import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, ScrollView, TextInput, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, RefreshControl, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from "../../supabase/supabaseClient";
 import Header from '../components/Header';
 import AndroidFooterSpacer from '../components/Footer';
@@ -184,6 +184,23 @@ const ViewGalleryScreen = () => {
       Alert.alert('Error', 'No artwork ID provided');
     }
   }, [artworkId]);
+
+  // Android hardware back: navigate to Gallery screen
+  useFocusEffect(
+    React.useCallback(() => {
+      if (Platform.OS !== 'android') return;
+      const onBack = () => {
+        try {
+          router.replace('/(drawer)/gallery');
+        } catch (_) {
+          router.back();
+        }
+        return true; // we handled it
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+      return () => sub.remove();
+    }, [router])
+  );
 
   const handleLike = async () => {
     if (!artwork) return;
