@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, Modal, TextInput, TouchableWithoutFeedback, FlatList, ScrollView, Platform, KeyboardAvoidingView, Keyboard, Dimensions, BackHandler, RefreshControl } from 'react-native';
+import { StyleSheet, View, Text, SafeAreaView, Image, TouchableOpacity, Modal, TextInput, TouchableWithoutFeedback, FlatList, ScrollView, Platform, KeyboardAvoidingView, Keyboard, Dimensions, BackHandler, RefreshControl, Alert } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import Header from '../components/Header';
 import { supabase } from "../../supabase/supabaseClient";
 import { useRouter, useFocusEffect } from "expo-router";
+import AndroidFooterSpacer from '../components/Footer';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -28,6 +29,21 @@ const HomeScreen = () => {
   const [role, setRole] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [menuPost, setMenuPost] = useState(null);
+  // Pagination state (mirror web)
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const POSTS_PER_PAGE = 10;
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingPost, setEditingPost] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editImages, setEditImages] = useState([]);
+  const [originalEditImages, setOriginalEditImages] = useState([]);
+  
+  // Art interests modal
   const [interestsModalVisible, setInterestsModalVisible] = useState(false);
   const [selectedInterests, setSelectedInterests] = useState([]);
   const [hasArtPreferences, setHasArtPreferences] = useState(false);
@@ -86,7 +102,120 @@ const HomeScreen = () => {
     return null;
   };
 
+  const pickEditImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+      allowsMultipleSelection: true,
+    });
+    if (!result.canceled) {
+      const uris = result.assets.map(a => a.uri);
+      setEditImages(prev => {
+        const merged = [...prev, ...uris];
+        return merged.slice(0, 4); // cap to 4 to match create UI
+      });
+    }
+  };
+
+  const removeEditImage = (index) => {
+    setEditImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+
+  const saveEditPost = async () => {
+    if (!editingPost) return;
+    const postId = editingPost.id;
+    try {
+      setEditSaving(true);
+
+      // Build FormData to mirror web EditPostModal
+      const fd = new FormData();
+      fd.append('description', String(editText ?? ''));
+
+      // Determine existing vs new images
+      const isHttpUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
+      const origSet = new Set(originalEditImages);
+      const currentSet = new Set(editImages);
+
+      // existingImages: keep URLs that remained
+      (editImages || []).forEach((u) => {
+        if (isHttpUrl(u) && origSet.has(u)) {
+          fd.append('existingImages', u);
+        }
+      });
+
+      // imagesToRemove: urls present originally but not in current selection
+      (originalEditImages || []).forEach((u) => {
+        if (!currentSet.has(u)) {
+          fd.append('imagesToRemove', u);
+        }
+      });
+
+      // images: new local images (URIs)
+      (editImages || []).forEach((uri, index) => {
+        if (!isHttpUrl(uri)) {
+          const filename = (String(uri).split('/').pop()) || `image_${index}.jpg`;
+          const match = /\.(\w+)$/.exec(filename);
+          const type = match ? `image/${match[1]}` : 'image/jpeg';
+          fd.append('images', { uri: String(uri), name: filename, type });
+        }
+      });
+
+      const res = await fetch(`${API_BASE}/homepage/posts/${postId}`, {
+        method: 'PUT',
+        headers: {
+          'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
+        },
+        body: fd,
+      });
+      if (!res.ok) {
+        let msg = 'Failed to update post';
+        try { const j = await res.json(); if (j?.error || j?.message) msg = String(j.error || j.message); } catch {}
+        throw new Error(msg);
+      }
+
+      // Refresh posts to reflect new remote image URLs
+      await fetchPosts();
+      setEditModalVisible(false);
+      setEditingPost(null);
+      setEditText('');
+      setEditImages([]);
+      setOriginalEditImages([]);
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to update post');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   
+  // Check if user has art preferences
+  const checkArtPreferences = async (at, rt) => {
+    try {
+      const res = await fetch(`${API_BASE}/gallery/getArtPreference`, {
+        method: "GET",
+        headers: {
+          'Cookie': `access_token=${at}; refresh_token=${rt}`,
+        },
+      });
+      const data = await res.json();
+      
+      if (data?.artPreference) {
+        // Check if user has selected at least one preference
+        const prefs = data.artPreference;
+        const hasPreferences = Object.keys(prefs).some(key => 
+          key !== 'userId' && key !== 'id' && key !== 'created_at' && prefs[key] === true
+        );
+        setHasArtPreferences(hasPreferences);
+        return hasPreferences;
+      }
+      return false;
+    } catch (err) {
+      console.log("checkArtPreferences error:", err?.message || err);
+      return false;
+    }
+  };
+
   // Fetch user profile from backend to determine if profile modal should show
   const fetchUserProfile = async (at, rt) => {
     try {
@@ -125,19 +254,11 @@ const HomeScreen = () => {
           setProfileModalVisible(true);
         } else {
           setProfileModalVisible(false);
-        }
-
-        const prefKeys = [
-          'classicalArt','contemporaryArt','impressionist','abstractArt','sculpture','photography',
-          'digitalArt','streetArt','minimalist','surrealist','landscape','portrait','miniature',
-          'expressionist','realism','conceptual'
-        ];
-        const hasPrefs = prefKeys.some((k) => p && Object.prototype.hasOwnProperty.call(p, k) && p[k] === true);
-        setHasArtPreferences(!!hasPrefs);
-        if ((!(!p.username || !p.firstName || !p.lastName))) {
+          // Check art preferences after profile is complete
+          const hasPrefs = await checkArtPreferences(at, rt);
           if (!hasPrefs) {
-            // Defer to the authoritative status endpoint like the web does
-            await fetchArtPreferenceStatus(at, rt);
+            // Show interests modal if no preferences set
+            setInterestsModalVisible(true);
           }
         }
       } else {
@@ -186,32 +307,6 @@ const HomeScreen = () => {
     }
   };
 
-  // Check art preference setup status (web parity)
-  const fetchArtPreferenceStatus = async (at, rt) => {
-    try {
-      const res = await fetch(`${API_BASE}/profile/artPreferenceStatus`, {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          'Cookie': `access_token=${at}; refresh_token=${rt}`,
-        },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch art preference status: ${res.status}`);
-      const bodyText = await res.text();
-      let data = null;
-      try { data = bodyText ? JSON.parse(bodyText) : null; } catch { data = bodyText; }
-      const status = !!(
-        (typeof data === 'object' && (data?.preferenceStatus ?? data?.status ?? data?.data?.preferenceStatus))
-      );
-      setHasArtPreferences(status);
-      if (!status) setInterestsModalVisible(true);
-    } catch (e) {
-      console.log('[home.js] fetchArtPreferenceStatus error:', e?.message || e);
-      // If the status check fails, be conservative and show modal only if we don't already have prefs
-      if (!hasArtPreferences) setInterestsModalVisible(true);
-    }
-  };
-
 
   useEffect(() => {
     const init = async () => {
@@ -228,11 +323,11 @@ const HomeScreen = () => {
           // Get role and profile when authenticated
           await fetchRole(at, rt);
           await fetchUserProfile(at, rt);
-          await fetchPosts(at, rt);
+          await fetchPostsPage(1, false, at, rt);
           await fetchEvents(at, rt);
         } else {
           // no session tokens - still fetch posts (may be public) or skip
-          await fetchPosts(at, rt);
+          await fetchPostsPage(1, false, at, rt);
           await fetchEvents(at, rt);
         }
       } catch (e) {
@@ -278,14 +373,16 @@ const HomeScreen = () => {
   );
 
 
-  const fetchPosts = async (at = accessToken, rt = refreshToken) => {
+  // Paginated fetch like web: when append=false (page 1) include announcements; when append=true append only posts
+  const fetchPostsPage = async (p = 1, append = false, at = accessToken, rt = refreshToken) => {
     try {
       setLoading(true);
       const session = await supabase.auth.getSession();
-      const currentUserId = session?.data?.session?.user?.id;
+      const currentUid = session?.data?.session?.user?.id;
+      if (currentUid && !currentUserId) setCurrentUserId(currentUid);
 
 
-      const res = await fetch(`${API_BASE}/homepage/getPost`, {
+      const res = await fetch(`${API_BASE}/homepage/getPost?page=${p}&limit=${POSTS_PER_PAGE}`, {
         method: 'GET',
         headers: {
           'Cookie': `access_token=${at}; refresh_token=${rt}`,
@@ -293,38 +390,74 @@ const HomeScreen = () => {
       });
       const data = await res.json();
 
-      // Combine regular posts and announcements, just like web version
-      const allPosts = [...(data.announcements || []), ...(data.posts || [])];
-      setPosts(allPosts);
+      const incomingAnnouncements = Array.isArray(data.announcements) ? data.announcements : [];
+      const incomingPosts = Array.isArray(data.posts) ? data.posts : [];
+
+      if (append) {
+        // Append new posts avoiding duplicates by id
+        setPosts(prev => {
+          const existingIds = new Set(prev.map(x => x.id));
+          const toAdd = incomingPosts.filter(x => !existingIds.has(x.id));
+          return [...prev, ...toAdd];
+        });
+      } else {
+        // First page: include announcements + posts sorted like before via filteredData function
+        setPosts([...(incomingAnnouncements || []), ...(incomingPosts || [])]);
+      }
 
 
       const reactCounts = {};
       data.reacts?.forEach(r => {
         reactCounts[r.postId] = (reactCounts[r.postId] || 0) + 1;
       });
-      setLikes(reactCounts);
+      setLikes(prev => append ? { ...prev, ...reactCounts } : reactCounts);
 
 
       const commentCounts = {};
       data.comments?.forEach(c => {
         commentCounts[c.postId] = (commentCounts[c.postId] || 0) + 1;
       });
-      setComments(commentCounts);
+      setComments(prev => append ? { ...prev, ...commentCounts } : commentCounts);
 
 
       const initialLikes = {};
       data.reacts?.forEach(r => {
-        if (r.userId === currentUserId) {
+        if (r.userId === currentUid) {
           initialLikes[r.postId] = true;
         }
       });
-      setUserLikes(initialLikes);
+      setUserLikes(prev => append ? { ...prev, ...initialLikes } : initialLikes);
+
+      // hasMore based on API or length check
+      if (data.pagination && typeof data.pagination.hasMore === 'boolean') {
+        setHasMore(data.pagination.hasMore);
+      } else {
+        setHasMore(incomingPosts.length === POSTS_PER_PAGE);
+      }
 
 
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Backward-compat wrapper where older calls used fetchPosts()
+  const fetchPosts = async (at = accessToken, rt = refreshToken) => {
+    setPage(1);
+    await fetchPostsPage(1, false, at, rt);
+  };
+
+  const loadMore = async () => {
+    if (!hasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    const next = page + 1;
+    try {
+      await fetchPostsPage(next, true);
+      setPage(next);
+    } finally {
+      setIsLoadingMore(false);
     }
   };
 
@@ -384,7 +517,6 @@ const HomeScreen = () => {
       const res = await fetch(`${API_BASE}/homepage/createPost`, {
         method: "POST",
         headers: {
-          // NOTE: do not set Content-Type manually with FormData in fetch; leaving it as-is is fine for RN fetch
           'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
         },
         body: formData,
@@ -557,8 +689,6 @@ const HomeScreen = () => {
         });
       }
 
-
-      // Ensure all fields are appended as strings; send birthday as full ISO (parity with profile.js)
       const birthdayStr = birthday ? new Date(birthday).toISOString() : "";
       formData.append("firstName", String(firstName ?? ""));
       formData.append("middleName", String(middleName ?? ""));
@@ -574,7 +704,6 @@ const HomeScreen = () => {
       formData.append("about", String(about ?? ""));
 
 
-      // Debug summary of what we're about to send
       try {
         console.log("[home.js] updateProfile payload:", {
           firstName,
@@ -641,9 +770,6 @@ const HomeScreen = () => {
       // if profile is complete fetchUserProfile will setProfileModalVisible(false)
       // but ensure it's closed here as well for immediate UX
       setProfileModalVisible(false);
-      if (!hasArtPreferences) {
-        setInterestsModalVisible(true);
-      }
     }
   };
 
@@ -670,6 +796,13 @@ const HomeScreen = () => {
           );
         })()}
         <Text style={styles.username}>{post.user?.name}</Text>
+        <TouchableOpacity
+          onPress={() => setMenuPost(post)}
+          style={styles.moreBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color="#555" />
+        </TouchableOpacity>
       </View>
 
 
@@ -836,11 +969,9 @@ const HomeScreen = () => {
   const onRefresh = async () => {
     setRefreshing(true);
     try {
-      // Fetch both posts and events
-      await Promise.all([
-        fetchPosts(accessToken, refreshToken),
-        fetchEvents(accessToken, refreshToken)
-      ]);
+      setPage(1);
+      await fetchPostsPage(1, false, accessToken, refreshToken);
+      await fetchEvents(accessToken, refreshToken);
     } catch (err) {
       console.error('Refresh error:', err);
     } finally {
@@ -900,16 +1031,7 @@ const HomeScreen = () => {
 
 
       {(role === "artist" || role === "admin") && (
-        <TouchableOpacity
-          style={styles.postOverlayBox}
-          onPress={() => {
-            if (!hasArtPreferences) {
-              setInterestsModalVisible(true);
-              return;
-            }
-            setModalVisible(true);
-          }}
-        >
+        <TouchableOpacity style={styles.postOverlayBox} onPress={() => setModalVisible(true)}>
           {/* Show user's profile avatar if available; fallback keeps same size */}
   
           <Ionicons name="create-outline" size={24} color="#555" style={{ marginRight: 8 }} />
@@ -923,6 +1045,8 @@ const HomeScreen = () => {
         keyExtractor={(item) => `${item.itemType}-${item.id || item.eventId}`}
         renderItem={({ item }) => item.itemType === 'event' ? renderEvent({ item }) : renderPost({ item })}
         contentContainerStyle={{ paddingBottom: 120 }}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -930,6 +1054,17 @@ const HomeScreen = () => {
             colors={['#000']} // Android
             tintColor="#000" // iOS
           />
+        }
+        ListFooterComponent={
+          isLoadingMore ? (
+            <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+              <Text style={{ color: '#8b6f47', fontStyle: 'italic' }}>Loading more...</Text>
+            </View>
+          ) : !hasMore && filteredData.length > 0 ? (
+            <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+              <Text style={{ color: '#8b6f47', fontStyle: 'italic' }}>You\'ve reached the end of the feed</Text>
+            </View>
+          ) : null
         }
         ListEmptyComponent={
           loading ? (
@@ -945,6 +1080,108 @@ const HomeScreen = () => {
           ) : null
         }
       />
+
+      {/* Post options sheet (visible for owner/admin) */}
+      <Modal
+        visible={!!menuPost}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setMenuPost(null)}
+      >
+        <TouchableWithoutFeedback onPress={() => setMenuPost(null)}>
+          <View style={styles.optionsOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.optionsSheet}>
+                {(() => {
+                  const isOwner = menuPost && (
+                    role === 'admin' ||
+                    (menuPost?.userId && menuPost.userId === currentUserId) ||
+                    (menuPost?.user?.id && menuPost.user.id === currentUserId)
+                  );
+                  if (isOwner) {
+                    return (
+                      <>
+                        <TouchableOpacity
+                          style={styles.optionItem}
+                          onPress={() => {
+                            const p = menuPost;
+                            setMenuPost(null);
+                            setEditingPost(p);
+                            setEditText(String(p?.text || ""));
+                            // Initialize edit images from post
+                            try {
+                              let imgs = [];
+                              if (Array.isArray(p?.image)) imgs = p.image;
+                              else if (p?.image) imgs = [p.image];
+                              else if (Array.isArray(p?.images)) imgs = p.images;
+                              else if (p?.images) imgs = [p.images];
+                              const safeImgs = (imgs || []).filter(Boolean);
+                              setEditImages(safeImgs);
+                              setOriginalEditImages(safeImgs);
+                            } catch { setEditImages([]); }
+                            setEditModalVisible(true);
+                          }}
+                        >
+                          <Ionicons name="create-outline" size={18} color="#111" />
+                          <Text style={styles.optionText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionItem, styles.optionDanger]}
+                          onPress={() => {
+                            const postId = menuPost?.id;
+                            setMenuPost(null);
+                            if (!postId) return;
+                            Alert.alert(
+                              'Delete Post',
+                              'Are you sure you want to delete this post? This action cannot be undone.',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                { text: 'Delete', style: 'destructive', onPress: async () => {
+                                    try {
+                                      const res = await fetch(`${API_BASE}/homepage/posts/${postId}`, {
+                                        method: 'DELETE',
+                                        headers: { 'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}` },
+                                      });
+                                      if (!res.ok) {
+                                        let msg = 'Failed to delete post';
+                                        try { const j = await res.json(); if (j?.error || j?.message) msg = String(j.error || j.message); } catch {}
+                                        throw new Error(msg);
+                                      }
+                                      await fetchPosts();
+                                    } catch (e) {
+                                      Alert.alert('Error', e?.message || 'Failed to delete post');
+                                    }
+                                  } },
+                              ]
+                            );
+                          }}
+                        >
+                          <Ionicons name="trash-outline" size={18} color="#b91c1c" />
+                          <Text style={[styles.optionText, { color: '#b91c1c' }]}>Delete</Text>
+                        </TouchableOpacity>
+                      </>
+                    );
+                  }
+                  // Non-owner view: show Report only
+                  return (
+                    <TouchableOpacity
+                      style={styles.optionItem}
+                      onPress={() => {
+                        const postId = menuPost?.id;
+                        setMenuPost(null);
+                        if (postId) handleReport(postId);
+                      }}
+                    >
+                      <Ionicons name="flag-outline" size={18} color="#111" />
+                      <Text style={styles.optionText}>Report</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
 
 
       {/* Image fullscreen modal with carousel */}
@@ -1021,13 +1258,302 @@ const HomeScreen = () => {
       </Modal>
 
 
+      {/* Create Post modal */}
+      <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.uploadModalOverlay}>
+            <View style={styles.uploadModalContent}>
+              <View style={styles.uploadModalHeader}>
+                <Text style={styles.uploadModalTitle}>Create Post</Text>
+                <TouchableOpacity onPress={() => setModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#333" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.uploadModalBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                {/* User Avatar and Text Input */}
+                <View style={styles.postInputContainer}>
+                  {image ? (
+                    <Image source={image} style={styles.postAvatar} />
+                  ) : (
+                    <View style={[styles.postAvatar, styles.placeholderCircle]}>
+                      <Ionicons name="person" size={24} color="#999" />
+                    </View>
+                  )}
+                  <TextInput
+                    style={styles.postTextInput}
+                    placeholder="What's on your mind?"
+                    placeholderTextColor="#999"
+                    value={postText}
+                    onChangeText={setPostText}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+
+                {/* Photos (Optional) */}
+                <Text style={styles.uploadInputLabel}>Photos (Optional)</Text>
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false}
+                  style={{ marginBottom: 16 }}
+                >
+                  {pickedImages.map((item, index) => (
+                    <View key={index} style={styles.postImageContainer}>
+                      <Image
+                        source={{ uri: Array.isArray(item) ? item[0] : item }}
+                        style={styles.postPreviewImage}
+                      />
+                      <TouchableOpacity onPress={() => removeImage(index)} style={styles.postRemoveBtn}>
+                        <Ionicons name="close-circle" size={26} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <View style={styles.postImageContainer}>
+                    <TouchableOpacity onPress={pickImage} style={styles.postAddPhotoBtn}>
+                      <Ionicons name="image-outline" size={32} color="#A68C7B" />
+                      <Text style={styles.postAddPhotoText}>Add Photo</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+
+                {/* Post Button */}
+                <TouchableOpacity style={styles.uploadButton} onPress={uploadPost}>
+                  <Text style={styles.uploadButtonText}>Post</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+
+      {/* Edit Post modal */}
+      <Modal visible={editModalVisible} transparent animationType="slide" onRequestClose={() => setEditModalVisible(false)}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.uploadModalOverlay}>
+            <View style={styles.uploadModalContent}>
+              <View style={styles.uploadModalHeader}>
+                <Text style={styles.uploadModalTitle}>Edit Post</Text>
+                <TouchableOpacity onPress={() => setEditModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#333" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.uploadModalBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <View style={styles.postInputContainer}>
+                  {(() => {
+                    const avatarUri = ensureUri(image?.uri || editingPost?.user?.avatar);
+                    return avatarUri ? (
+                      <Image source={{ uri: avatarUri }} style={styles.postAvatar} />
+                    ) : (
+                      <View style={[styles.postAvatar, styles.placeholderCircle]}>
+                        <Ionicons name="person" size={24} color="#999" />
+                      </View>
+                    );
+                  })()}
+                  <TextInput
+                    style={styles.postTextInput}
+                    placeholder="Update your post text"
+                    placeholderTextColor="#999"
+                    value={editText}
+                    onChangeText={setEditText}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+
+                {/* Photos (Optional) - same UI as create modal, but for editing */}
+                <Text style={styles.uploadInputLabel}>Photos (Optional)</Text>
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false}
+                  style={{ marginBottom: 16 }}
+                >
+                  {editImages.map((uri, index) => (
+                    <View key={index} style={styles.postImageContainer}>
+                      <Image
+                        source={{ uri: Array.isArray(uri) ? uri[0] : uri }}
+                        style={styles.postPreviewImage}
+                      />
+                      <TouchableOpacity onPress={() => removeEditImage(index)} style={styles.postRemoveBtn}>
+                        <Ionicons name="close-circle" size={26} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {editImages.length < 4 && (
+                    <View style={styles.postImageContainer}>
+                      <TouchableOpacity onPress={pickEditImage} style={styles.postAddPhotoBtn}>
+                        <Ionicons name="image-outline" size={32} color="#A68C7B" />
+                        <Text style={styles.postAddPhotoText}>Add Photo</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </ScrollView>
+
+                <TouchableOpacity style={[styles.uploadButton, { opacity: editSaving ? 0.6 : 1 }]} onPress={saveEditPost} disabled={editSaving}>
+                  <Text style={styles.uploadButtonText}>{editSaving ? 'Saving...' : 'Save Changes'}</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+
+      {/* Comments Modal */}
+      <Modal visible={commentModalVisible} animationType="slide">
+        <SafeAreaView style={styles.container}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={{ flex: 1 }}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 10 }}>
+              <TouchableOpacity onPress={() => setCommentModalVisible(false)}>
+                <Ionicons name="arrow-back" size={24} color="#000" />
+              </TouchableOpacity>
+              <Text style={{ fontSize: 18, fontWeight: 'bold', marginLeft: 10 }}>Comments</Text>
+            </View>
+            <FlatList
+              data={currentPostComments}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={renderComment}
+              ListEmptyComponent={
+                <View style={styles.emptyCommentsContainer}>
+                  <Ionicons name="chatbubbles-outline" size={64} color="#A68C7B" style={{ marginBottom: 12 }} />
+                  <Text style={styles.emptyCommentsText}>No comments yet</Text>
+                  <Text style={styles.emptyCommentsSubtext}>Be the first to comment!</Text>
+                </View>
+              }
+              contentContainerStyle={currentPostComments.length === 0 ? { flex: 1 } : {}}
+            />
+            <View style={styles.commentInputContainer}>
+              <TextInput
+                style={styles.commentInput}
+                placeholder="Add a comment..."
+                value={newCommentText}
+                onChangeText={setNewCommentText}
+              />
+              <TouchableOpacity onPress={postComment} style={styles.sendButton}>
+                <Ionicons name="send" size={20} color="white" />
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
+
+
+      {/* Complete Your Profile Modal */}
+      <Modal visible={profileModalVisible} animationType="slide" transparent onRequestClose={() => setProfileModalVisible(false)}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.uploadModalOverlay}>
+            <View style={styles.uploadModalContent}>
+              <View style={styles.uploadModalHeader}>
+                <Text style={styles.uploadModalTitle}>Complete Your Profile</Text>
+                <TouchableOpacity onPress={() => setProfileModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#333" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.uploadModalBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <Text style={styles.uploadInputLabel}>Profile Photo</Text>
+                <TouchableOpacity onPress={pickProfileImage} style={styles.uploadImagePicker}>
+                  {tempImage ? (
+                    <Image source={tempImage} style={styles.uploadPickedImage} />
+                  ) : (
+                    <View style={styles.uploadImagePlaceholder}>
+                      <Ionicons name="person-circle-outline" size={48} color="#A68C7B" />
+                      <Text style={styles.uploadImageText}>Tap to add profile photo</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                <Text style={styles.uploadInputLabel}>Cover Photo</Text>
+                <TouchableOpacity onPress={pickBackgroundImage} style={styles.uploadImagePicker}>
+                  {tempBackgroundImage ? (
+                    <Image source={{ uri: tempBackgroundImage.uri }} style={styles.uploadPickedImage} />
+                  ) : (
+                    <View style={styles.uploadImagePlaceholder}>
+                      <Ionicons name="image-outline" size={48} color="#A68C7B" />
+                      <Text style={styles.uploadImageText}>Tap to add cover photo</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                <Text style={styles.uploadInputLabel}>First Name</Text>
+                <TextInput style={styles.uploadInput} placeholder="First Name" value={firstName} onChangeText={setFirstName} />
+
+                <Text style={styles.uploadInputLabel}>Middle Name</Text>
+                <TextInput style={styles.uploadInput} placeholder="Middle Name" value={middleName} onChangeText={setMiddleName} />
+
+                <Text style={styles.uploadInputLabel}>Last Name</Text>
+                <TextInput style={styles.uploadInput} placeholder="Last Name" value={lastName} onChangeText={setLastName} />
+
+                <Text style={styles.uploadInputLabel}>Username</Text>
+                <TextInput style={styles.uploadInput} placeholder="Username" value={userNameField} onChangeText={setUserNameField} />
+
+                <Text style={styles.uploadInputLabel}>Sex</Text>
+                <TouchableOpacity style={styles.uploadInput} onPress={() => setShowSexDropdown(!showSexDropdown)}>
+                  <Text style={{ color: sex ? "#000" : "#999" }}>{sex || "Select Sex"}</Text>
+                  <Ionicons name={showSexDropdown ? "chevron-up" : "chevron-down"} size={20} color="#555" style={{ position: "absolute", right: 12, top: 12 }} />
+                </TouchableOpacity>
+                {showSexDropdown && (
+                  <View style={styles.categoryDropdown}>
+                    {["Male", "Female", "PreferNotToSay"].map((item) => (
+                      <TouchableOpacity key={item} style={styles.categoryItem} onPress={() => { setSex(item); setShowSexDropdown(false); }}>
+                        <Text style={styles.categoryItemText}>{item}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                <Text style={styles.uploadInputLabel}>Birthday</Text>
+                <TouchableOpacity style={styles.uploadInput} onPress={() => setShowDatePicker(true)}>
+                  <Text style={{ color: birthday ? "#000" : "#999" }}>
+                    {birthday ? formattedDate : "Select your birthday"}
+                  </Text>
+                </TouchableOpacity>
+                {showDatePicker && (
+                  <DateTimePicker value={birthday} mode="date" display="default" onChange={onChangeDate} />
+                )}
+
+                <Text style={styles.uploadInputLabel}>Address</Text>
+                <TextInput style={styles.uploadInput} placeholder="Enter your address" value={address} onChangeText={setAddress} />
+
+                <Text style={styles.uploadInputLabel}>Bio</Text>
+                <TextInput style={styles.uploadInput} placeholder="Enter your bio" value={bio} onChangeText={setBio} />
+
+                <Text style={styles.uploadInputLabel}>About</Text>
+                <TextInput style={[styles.uploadInput, styles.uploadTextArea]} placeholder="Write something about yourself" multiline value={about} onChangeText={setAbout} />
+
+                <TouchableOpacity style={styles.uploadButton} onPress={handleProfileSave}>
+                  <Text style={styles.uploadButtonText}>Save Profile</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Art Interests Modal */}
       <Modal visible={interestsModalVisible} animationType="fade" transparent>
         <TouchableWithoutFeedback>
           <View style={styles.modalOverlay}>
             <View style={styles.interestsBox}>
               <Text style={styles.modalTitle}>Choose Your Art Interests</Text>
-              <Text style={{ marginBottom: 10, color: '#555' }}>Pick a few to personalize your feed</Text>
-              <View style={styles.interestsGrid}>
+              <Text style={{ marginBottom: 10, color: '#555', textAlign: 'center' }}>Pick a few to personalize your feed</Text>
+              <ScrollView style={{ maxHeight: 400 }} showsVerticalScrollIndicator={false}>
+                <View style={styles.interestsGrid}>
                 {[
                   { id: 'classical', name: 'Classical Art', color: '#111' },
                   { id: 'contemporary', name: 'Contemporary', color: '#6b21a8' },
@@ -1067,352 +1593,83 @@ const HomeScreen = () => {
                     </TouchableOpacity>
                   );
                 })}
-              </View>
-              {!!selectedInterests.length && (
-                <Text style={{ marginTop: 6, marginBottom: 10, color: '#111', fontWeight: '600' }}>
-                  {selectedInterests.length} selected
-                </Text>
-              )}
-              <TouchableOpacity
-                style={[styles.saveButton, { alignSelf: 'stretch', opacity: selectedInterests.length ? 1 : 0.5 }]}
-                disabled={!selectedInterests.length}
-                onPress={async () => {
-                  const preferences = {
-                    classicalArt: selectedInterests.includes('classical'),
-                    contemporaryArt: selectedInterests.includes('contemporary'),
-                    impressionist: selectedInterests.includes('impressionist'),
-                    abstractArt: selectedInterests.includes('abstract'),
-                    sculpture: selectedInterests.includes('sculpture'),
-                    photography: selectedInterests.includes('photography'),
-                    digitalArt: selectedInterests.includes('digital'),
-                    streetArt: selectedInterests.includes('street'),
-                    minimalist: selectedInterests.includes('minimalist'),
-                    surrealist: selectedInterests.includes('surrealist'),
-                    landscape: selectedInterests.includes('landscape'),
-                    portrait: selectedInterests.includes('portrait'),
-                    miniature: selectedInterests.includes('miniature'),
-                    expressionist: selectedInterests.includes('expressionist'),
-                    realism: selectedInterests.includes('realism'),
-                    conceptual: selectedInterests.includes('conceptual'),
-                  };
-                  try {
-                    console.log('[home.js] saveArtPreferences -> URL:', `${API_BASE}/gallery/saveArtPreferences`);
-                    console.log('[home.js] saveArtPreferences -> tokens present:', !!accessToken, !!refreshToken);
-                    console.log('[home.js] saveArtPreferences -> payload:', preferences);
-                    const res = await fetch(`${API_BASE}/profile/saveArtPreferences`, {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
-                      },
-                      credentials: 'include',
-                      body: JSON.stringify(preferences),
-                    });
-                    console.log('[home.js] saveArtPreferences -> response status:', res.status);
-                    if (!res.ok) {
-                      let errMsg = `Failed to save preferences (${res.status})`;
-                      try {
-                        const txt = await res.text();
-                        try {
-                          const j = txt ? JSON.parse(txt) : null;
-                          if (j && (j.message || j.error)) errMsg = `${errMsg}: ${j.message || j.error}`;
-                          else if (txt) errMsg = `${errMsg}: ${txt}`;
-                        } catch {
-                          if (txt) errMsg = `${errMsg}: ${txt}`;
-                        }
-                      } catch {}
-                      throw new Error(errMsg);
-                    }
-                    console.log('[home.js] saveArtPreferences -> success');
-                    setHasArtPreferences(true);
-                    setInterestsModalVisible(false);
-                  } catch (e) {
-                    console.log('[home.js] saveArtPreferences error:', e?.message || e);
-                    alert(e?.message || 'Failed to save preferences');
-                  }
-                }}
-              >
-                <Text style={styles.saveButtonText}>Continue</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.cancelButton, { alignSelf: 'stretch', marginTop: 8 }]}
-                onPress={() => setInterestsModalVisible(false)}
-              >
-                <Text style={styles.cancelButtonText}>Maybe later</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
-
-
-      {/* Create Post modal */}
-      <Modal visible={modalVisible} transparent animationType="fade">
-        <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
-          <View style={styles.modalBackground}>
-            <TouchableWithoutFeedback>
-              <View style={styles.modalCard}>
-                <Text style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 10 }}>Create Post</Text>
-                <View style={styles.modalInputBox}>
-                  {/* Show user's profile avatar if available; fallback keeps same size */}
-                  {image ? (
-                    <Image source={image} style={styles.avatar} />
-                  ) : (
-                    <View style={[styles.avatar, styles.placeholderCircle]} />
-                  )}
-                  <TextInput
-                    style={styles.modalInput}
-                    placeholder="What's on your mind?"
-                    placeholderTextColor="#555"
-                    value={postText}
-                    onChangeText={setPostText}
-                    multiline
-                  />
                 </View>
-
-                <FlatList
-                  horizontal
-                  data={pickedImages}
-                  keyExtractor={(_, index) => index.toString()}
-                  showsHorizontalScrollIndicator={false}
-                  renderItem={({ item, index }) => (
-                    <View style={{ position: 'relative', marginRight: 10, overflow: 'visible' }}>
-                      <Image
-                        source={{ uri: Array.isArray(item) ? item[0] : item }}
-                        style={styles.previewImage}
-                      />
-                      <TouchableOpacity onPress={() => removeImage(index)} style={styles.removeImageBtn}>
-                        <Ionicons name="close" size={18} color="white" />
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                                
-                  ListFooterComponent={
-                    <TouchableOpacity onPress={pickImage} style={styles.addMoreBtn} activeOpacity={0.7}>
-                      <Ionicons name="image-outline" size={40} color="black" />
-                      <Text style={styles.addPhotoText}>Add Photo</Text>
-                    </TouchableOpacity>
-                  }
-                />
-
-
-                <TouchableOpacity style={styles.postButton} onPress={uploadPost}>
-                  <Text style={styles.postButtonText}>Post</Text>
-                </TouchableOpacity>
-              </View>
-            </TouchableWithoutFeedback>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
-
-
-      {/* Comments Modal */}
-      <Modal visible={commentModalVisible} animationType="slide" onRequestClose={() => setCommentModalVisible(false)}>
-        <SafeAreaView style={styles.container}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={{ flex: 1 }}
-            keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 10 }}>
-              <TouchableOpacity onPress={() => setCommentModalVisible(false)}>
-                <Ionicons name="arrow-back" size={24} color="#000" />
-              </TouchableOpacity>
-              <Text style={{ fontSize: 18, fontWeight: 'bold', marginLeft: 10 }}>Comments</Text>
-            </View>
-            <FlatList
-              data={currentPostComments}
-              keyExtractor={(item) => item.id.toString()}
-              renderItem={renderComment}
-            />
-            <View style={styles.commentInputContainer}>
-              <TextInput
-                style={styles.commentInput}
-                placeholder="Add a comment..."
-                value={newCommentText}
-                onChangeText={setNewCommentText}
-              />
-              <TouchableOpacity onPress={postComment} style={styles.sendButton}>
-                <Ionicons name="send" size={20} color="white" />
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-      </Modal>
-
-
-      {/* Complete Your Profile Modal */}
-      <Modal visible={profileModalVisible} animationType="fade" transparent>
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : "height"}
-              style={styles.keyboardView}
-            >
-              <ScrollView
-                contentContainerStyle={styles.modalBox}
-                keyboardShouldPersistTaps="handled"
-              >
-                <Text style={styles.modalTitle}>Complete Your Profile</Text>
-
-
-                <TouchableOpacity onPress={pickProfileImage} style={styles.imagePicker}>
-                  {tempImage ? (
-                    <Image source={tempImage} style={styles.avatarEdit} />
-                  ) : (
-                    <View style={[styles.avatarEdit, styles.placeholderCircle]}>
-                      <Ionicons name="person" size={40} color="#999" />
-                    </View>
-                  )}
-                  <Text style={styles.changePhotoText}>Change Profile Photo</Text>
-                </TouchableOpacity>
-
-
-                <TouchableOpacity onPress={pickBackgroundImage} style={styles.imagePicker}>
-                  <View style={styles.backgroundPreviewContainer}>
-                    {tempBackgroundImage ? (
-                      <Image source={{ uri: tempBackgroundImage.uri }} style={styles.backgroundPreviewImage} resizeMode="cover" />
-                    ) : (
-                      <View style={[styles.backgroundPreviewImage, styles.placeholderCircle]}>
-                        <Ionicons name="image" size={40} color="#999" />
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.changePhotoText}>Change Background Photo</Text>
-                </TouchableOpacity>
-
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="First Name"
-                  placeholderTextColor="#999"
-                  value={firstName}
-                  onChangeText={setFirstName}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Middle Name"
-                  placeholderTextColor="#999"
-                  value={middleName}
-                  onChangeText={setMiddleName}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Last Name"
-                  placeholderTextColor="#999"
-                  value={lastName}
-                  onChangeText={setLastName}
-                />
-
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Username"
-                  placeholderTextColor="#999"
-                  value={userNameField}
-                  onChangeText={setUserNameField}
-                />
-
-
-                <View style={styles.inputContainer}>
-                  <TouchableOpacity
-                    style={styles.input}
-                    onPress={() => setShowSexDropdown(!showSexDropdown)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={{ color: sex ? "#000" : "#999" }}>
-                      {sex || "Select Sex"}
-                    </Text>
-                    <Ionicons
-                      name={showSexDropdown ? "chevron-up" : "chevron-down"}
-                      size={20}
-                      color="#555"
-                      style={{ position: "absolute", right: 10, top: 12 }}
-                    />
-                  </TouchableOpacity>
-
-
-                  {showSexDropdown && (
-                    <View style={styles.dropdownList}>
-                      {["Male", "Female", "PreferNotToSay"].map((item) => (
-                        <TouchableOpacity
-                          key={item}
-                          style={styles.dropdownItem}
-                          onPress={() => {
-                            setSex(item);
-                            setShowSexDropdown(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownItemText}>{item}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
-
-
-                <TouchableOpacity
-                  style={styles.input}
-                  onPress={() => setShowDatePicker(true)}
-                >
-                  <Text style={{ color: birthday ? "#000" : "#888" }}>
-                    {birthday
-                      ? `Birthday: ${formattedDate}`
-                      : "Select your birthday"}
+                {!!selectedInterests.length && (
+                  <Text style={{ marginTop: 6, marginBottom: 10, color: '#111', fontWeight: '600', textAlign: 'center' }}>
+                    {selectedInterests.length} selected
                   </Text>
-                </TouchableOpacity>
-
-
-                {showDatePicker && (
-                  <DateTimePicker
-                    value={birthday}
-                    mode="date"
-                    display="default"
-                    onChange={onChangeDate}
-                  />
                 )}
-
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your address"
-                  placeholderTextColor="#999"
-                  value={address}
-                  onChangeText={setAddress}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your bio"
-                  placeholderTextColor="#999"
-                  value={bio}
-                  onChangeText={setBio}
-                />
-                <TextInput
-                  style={[styles.input, { height: 80 }]}
-                  placeholder="Write something about yourself"
-                  placeholderTextColor="#999"
-                  multiline
-                  value={about}
-                  onChangeText={setAbout}
-                />
-
-
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity
-                    style={styles.cancelButton}
-                    onPress={() => setProfileModalVisible(false)}
-                  >
-                    <Text style={styles.cancelButtonText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.saveButton} onPress={handleProfileSave}>
-                    <Text style={styles.saveButtonText}>Save</Text>
-                  </TouchableOpacity>
-                </View>
               </ScrollView>
-            </KeyboardAvoidingView>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 15, gap: 10 }}>
+                <TouchableOpacity
+                  style={[styles.cancelButton, { flex: 1, alignItems: 'center', justifyContent: 'center' }]}
+                  onPress={() => setInterestsModalVisible(false)}
+                >
+                  <Text style={styles.cancelButtonText}>Maybe later</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.saveButton, { flex: 1, backgroundColor: '#A68C7B', opacity: selectedInterests.length ? 1 : 0.5, alignItems: 'center', justifyContent: 'center' }]}
+                  disabled={!selectedInterests.length}
+                  onPress={async () => {
+                    const preferences = {
+                      classicalArt: selectedInterests.includes('classical'),
+                      contemporaryArt: selectedInterests.includes('contemporary'),
+                      impressionist: selectedInterests.includes('impressionist'),
+                      abstractArt: selectedInterests.includes('abstract'),
+                      sculpture: selectedInterests.includes('sculpture'),
+                      photography: selectedInterests.includes('photography'),
+                      digitalArt: selectedInterests.includes('digital'),
+                      streetArt: selectedInterests.includes('street'),
+                      minimalist: selectedInterests.includes('minimalist'),
+                      surrealist: selectedInterests.includes('surrealist'),
+                      landscape: selectedInterests.includes('landscape'),
+                      portrait: selectedInterests.includes('portrait'),
+                      miniature: selectedInterests.includes('miniature'),
+                      expressionist: selectedInterests.includes('expressionist'),
+                      realism: selectedInterests.includes('realism'),
+                      conceptual: selectedInterests.includes('conceptual'),
+                    };
+                    try {
+                      const res = await fetch(`${API_BASE}/profile/saveArtPreferences`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Cookie': `access_token=${accessToken}; refresh_token=${refreshToken}`,
+                        },
+                        credentials: 'include',
+                        body: JSON.stringify(preferences),
+                      });
+                      if (!res.ok) {
+                        let errMsg = `Failed to save preferences (${res.status})`;
+                        try {
+                          const txt = await res.text();
+                          try {
+                            const j = txt ? JSON.parse(txt) : null;
+                            if (j && (j.message || j.error)) errMsg = `${errMsg}: ${j.message || j.error}`;
+                            else if (txt) errMsg = `${errMsg}: ${txt}`;
+                          } catch {
+                            if (txt) errMsg = `${errMsg}: ${txt}`;
+                          }
+                        } catch {}
+                        throw new Error(errMsg);
+                      }
+                      setHasArtPreferences(true);
+                      setInterestsModalVisible(false);
+                    } catch (e) {
+                      console.log('saveArtPreferences error:', e?.message || e);
+                      alert(e?.message || 'Failed to save preferences');
+                    }
+                  }}
+                >
+                  <Text style={styles.saveButtonText}>Continue</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      <AndroidFooterSpacer />
     </SafeAreaView>
   );
 };
@@ -1483,7 +1740,7 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   addPhotoText: { color: 'black', fontSize: 12, marginTop: 4, fontWeight: '600' },
-  postButton: { backgroundColor: 'black', paddingVertical: 12, borderRadius: 25, alignItems: 'center', marginTop: 5 },
+  postButton: { backgroundColor: '#A68C7B', paddingVertical: 12, borderRadius: 25, alignItems: 'center', marginTop: 5 },
   postButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   card: {
     backgroundColor: 'white',
@@ -1498,6 +1755,7 @@ const styles = StyleSheet.create({
   },
   userInfo: { flexDirection: 'row', alignItems: 'center', marginBottom: 5 },
   username: { fontWeight: 'bold' },
+  moreBtn: { marginLeft: 'auto', paddingHorizontal: 8, paddingVertical: 4 },
   description: { marginBottom: 8 },
   timestamp: {
     color: '#999',
@@ -1519,7 +1777,23 @@ const styles = StyleSheet.create({
   },
   commentInputContainer: { flexDirection: 'row', padding: 10, borderTopWidth: 1, borderColor: '#eee' },
   commentInput: { flex: 1, backgroundColor: '#f0f2f5', borderRadius: 20, paddingHorizontal: 12 },
-  sendButton: { backgroundColor: 'black', borderRadius: 20, padding: 10, marginLeft: 8 },
+  sendButton: { backgroundColor: '#A68C7B', borderRadius: 20, padding: 10, marginLeft: 8 },
+  emptyCommentsContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyCommentsText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#A68C7B',
+    marginBottom: 4,
+  },
+  emptyCommentsSubtext: {
+    fontSize: 14,
+    color: '#999',
+  },
 
 
   modalOverlay: {
@@ -1535,43 +1809,6 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     elevation: 5,
     alignItems: "center",
-  },
-  interestsBox: {
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 15,
-    elevation: 6,
-    width: '90%',
-    maxWidth: 420,
-    alignItems: 'center',
-  },
-  interestsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    width: '100%',
-  },
-  categoryCard: {
-    width: '48%',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  categoryDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 8,
-  },
-  categoryText: {
-    color: '#111827',
-    fontWeight: '600',
-    flexShrink: 1,
   },
   modalTitle: {
     fontSize: 18,
@@ -1627,7 +1864,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   saveButton: {
-    backgroundColor: "black",
+    backgroundColor: "#A68C7B",
     paddingVertical: 8,
     paddingHorizontal: 25,
     borderRadius: 20,
@@ -1737,6 +1974,230 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     textAlign: 'center',
+  },
+  optionsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  optionsSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingVertical: 8,
+    paddingBottom: 24,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  optionText: { marginLeft: 10, fontSize: 16, color: '#111' },
+  optionDanger: { borderTopWidth: 1, borderTopColor: '#eee' },
+  interestsBox: {
+    backgroundColor: '#fff',
+    padding: 20,
+    borderRadius: 20,
+    width: '90%',
+    maxHeight: '80%',
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+  },
+  interestsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  categoryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff',
+    width: '48%',
+    marginBottom: 8,
+  },
+  categoryDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  categoryText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    flex: 1,
+  },
+  uploadModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  uploadModalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+  },
+  uploadModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  uploadModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#A68C7B',
+  },
+  uploadModalBody: {
+    padding: 20,
+  },
+  uploadInputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  uploadButton: {
+    backgroundColor: '#A68C7B',
+    paddingVertical: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  uploadButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  postInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 20,
+  },
+  postAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  postTextInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  postImageContainer: {
+    position: 'relative',
+    marginRight: 10,
+    paddingTop: 10,
+    paddingRight: 10,
+  },
+  postPreviewImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 8,
+  },
+  postRemoveBtn: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 13,
+  },
+  postAddPhotoBtn: {
+    width: 100,
+    height: 100,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#A68C7B',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  postAddPhotoText: {
+    fontSize: 12,
+    color: '#A68C7B',
+    marginTop: 4,
+  },
+  uploadImagePicker: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#A68C7B',
+    borderStyle: 'dashed',
+    marginBottom: 20,
+    overflow: 'hidden',
+  },
+  uploadImagePlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  uploadImageText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: '#A68C7B',
+  },
+  uploadPickedImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  uploadInput: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    marginBottom: 16,
+    backgroundColor: '#fff',
+  },
+  uploadTextArea: {
+    height: 100,
+    textAlignVertical: 'top',
+  },
+  categoryDropdown: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    marginTop: -8,
+    marginBottom: 16,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  categoryItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  categoryItemText: {
+    fontSize: 14,
+    color: '#333',
   },
 });
 
