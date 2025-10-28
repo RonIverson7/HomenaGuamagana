@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from "../../supabase/supabaseClient";
 import Header from '../components/Header';
 import AndroidFooterSpacer from '../components/Footer';
+import * as ImagePicker from 'expo-image-picker';
 
 
 const API_BASE = "http://192.168.100.83:3000/api";
@@ -23,6 +24,17 @@ const ViewGalleryScreen = () => {
   const [viewCount, setViewCount] = useState(0);
   const [zoomImage, setZoomImage] = useState(null);
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [imageRefreshKey, setImageRefreshKey] = useState(0);
+  // menu & edit state
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [editVisible, setEditVisible] = useState(false);
+  const [editForm, setEditForm] = useState({ title: '', medium: '', description: '', category: '' });
+  const [editImage, setEditImage] = useState(null); // { uri }
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [originalImages, setOriginalImages] = useState([]);
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [categories, setCategories] = useState([]);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
   const loadSession = async () => {
     const { data } = await supabase.auth.getSession();
@@ -53,12 +65,39 @@ const ViewGalleryScreen = () => {
           fetchLikes(foundArtwork.id);
           fetchViews(foundArtwork.id);
           trackView(foundArtwork.id);
+          // set up edit form prefill
+          const firstCat = Array.isArray(foundArtwork.categories) && foundArtwork.categories.length > 0 ? foundArtwork.categories[0] : (foundArtwork.category || '');
+          setEditForm({
+            title: foundArtwork.title || '',
+            medium: foundArtwork.medium || '',
+            description: foundArtwork.description || '',
+            category: firstCat || ''
+          });
+          setEditImage(null); // no change by default
+          // capture original image URLs as returned by API (do not resolve with origin)
+          const rawImg = foundArtwork.image;
+          const imgsArray = Array.isArray(rawImg) ? rawImg : (rawImg ? [rawImg] : []);
+          setOriginalImages(imgsArray);
         }
       }
     } catch (error) {
       console.error('Error fetching artwork:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchCategories = async () => {
+    try {
+      const { at, rt } = await loadSession();
+      const res = await fetch(`${API_BASE}/gallery/getCategories`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', Cookie: `access_token=${at}; refresh_token=${rt}` },
+      });
+      const data = await res.json();
+      if (data?.categories) setCategories(data.categories);
+    } catch (e) {
+      // non-fatal
     }
   };
 
@@ -185,6 +224,17 @@ const ViewGalleryScreen = () => {
     }
   }, [artworkId]);
 
+  // get current user id for ownership check
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const uid = data?.user?.id || null;
+        setCurrentUserId(uid);
+      } catch {}
+    })();
+  }, []);
+
   // Android hardware back: navigate to Gallery screen
   useFocusEffect(
     React.useCallback(() => {
@@ -277,7 +327,10 @@ const ViewGalleryScreen = () => {
     if (!imageData) return null;
     const imageUrl = Array.isArray(imageData) ? imageData[0] : imageData;
     if (!imageUrl) return null;
-    return imageUrl.startsWith('http') ? imageUrl : `${API_ORIGIN}${imageUrl}`;
+    const base = imageUrl.startsWith('http') ? imageUrl : `${API_ORIGIN}${imageUrl}`;
+    // cache-buster to ensure freshly edited images appear
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}v=${imageRefreshKey}`;
   };
 
   const formatDate = (dateString) => {
@@ -366,6 +419,16 @@ const ViewGalleryScreen = () => {
               style={styles.artworkImage}
               defaultSource={require('../../assets/icon.png')}
             />
+            {/* 3-dot menu button in image header area */}
+            <TouchableOpacity
+              style={styles.moreBtn}
+              onPress={() => {
+                setMenuVisible(true);
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="ellipsis-horizontal" size={22} color="#333" />
+            </TouchableOpacity>
           </TouchableOpacity>
 
           {/* Title and Artist */}
@@ -460,6 +523,306 @@ const ViewGalleryScreen = () => {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Options sheet modal */}
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity activeOpacity={1} style={styles.optionsOverlay} onPress={() => setMenuVisible(false)}>
+          <View style={styles.optionsSheet}>
+            {(() => {
+              const ownerId = artwork?.userId || artwork?.user?.id || artwork?.ownerId || null;
+              const isOwner = ownerId && currentUserId && String(ownerId) === String(currentUserId);
+              if (isOwner) {
+                return (
+                  <>
+                    <TouchableOpacity
+                      style={styles.optionItem}
+                      onPress={async () => {
+                        setMenuVisible(false);
+                        await fetchCategories();
+                        setEditVisible(true);
+                      }}
+                    >
+                      <Ionicons name="create-outline" size={18} color="#111" />
+                      <Text style={styles.optionText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.optionItem, styles.optionDanger]}
+                      onPress={async () => {
+                        setMenuVisible(false);
+                        Alert.alert(
+                          'Delete Artwork',
+                          'Are you sure you want to delete this artwork? This action cannot be undone.',
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Delete', style: 'destructive', onPress: async () => {
+                                try {
+                                  const { at, rt } = await loadSession();
+                                  const res = await fetch(`${API_BASE}/gallery/artwork/${artwork.id}`, {
+                                    method: 'DELETE',
+                                    headers: { 'Cookie': `access_token=${at}; refresh_token=${rt}` },
+                                  });
+                                  if (!res.ok) {
+                                    const txt = await res.text();
+                                    throw new Error(txt || 'Failed to delete');
+                                  }
+                                  Alert.alert('Deleted', 'Artwork deleted successfully');
+                                  router.replace('/(drawer)/gallery');
+                                } catch (e) {
+                                  Alert.alert('Error', e?.message || 'Failed to delete');
+                                }
+                              } }
+                          ]
+                        );
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="#b91c1c" />
+                      <Text style={[styles.optionText, { color: '#b91c1c' }]}>Delete</Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              }
+              return (
+                <TouchableOpacity
+                  style={styles.optionItem}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    console.log('Report not implemented yet, artwork id:', artwork?.id);
+                  }}
+                >
+                  <Ionicons name="flag-outline" size={18} color="#111" />
+                  <Text style={styles.optionText}>Report</Text>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Edit Artwork Modal (mirror Upload UI) */}
+      <Modal
+        visible={editVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditVisible(false)}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Edit Artwork</Text>
+                <TouchableOpacity onPress={() => setEditVisible(false)}>
+                  <Ionicons name="close" size={24} color="#333" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={styles.modalBody}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ paddingBottom: Platform.OS === 'android' ? 48 : 24 }}
+              >
+                {/* Image Picker - dashed like upload */}
+                <TouchableOpacity style={styles.imagePicker} onPress={async () => {
+                  const result = await ImagePicker.launchImageLibraryAsync({
+                    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                    allowsEditing: true,
+                    aspect: [4,3],
+                    quality: 0.8,
+                  });
+                  if (!result.canceled) {
+                    setEditImage({ uri: result.assets[0].uri });
+                  }
+                }}>
+                  {editImage ? (
+                    <View style={{ flex: 1 }}>
+                      <Image source={{ uri: editImage.uri }} style={styles.pickedImage} />
+                      <TouchableOpacity
+                        style={styles.removeImageBtn}
+                        onPress={async () => {
+                          const result = await ImagePicker.launchImageLibraryAsync({
+                            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                            allowsEditing: true,
+                            aspect: [4,3],
+                            quality: 0.8,
+                          });
+                          if (!result.canceled) {
+                            setEditImage({ uri: result.assets[0].uri });
+                          }
+                        }}
+                      >
+                        <Ionicons name="close" size={18} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : artwork?.image ? (
+                    <View style={{ flex: 1 }}>
+                      <Image source={{ uri: resolveImageUrl(artwork.image) }} style={styles.pickedImage} />
+                      <TouchableOpacity
+                        style={styles.removeImageBtn}
+                        onPress={async () => {
+                          const result = await ImagePicker.launchImageLibraryAsync({
+                            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                            allowsEditing: true,
+                            aspect: [4,3],
+                            quality: 0.8,
+                          });
+                          if (!result.canceled) {
+                            setEditImage({ uri: result.assets[0].uri });
+                          }
+                        }}
+                      >
+                        <Ionicons name="close" size={18} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={styles.imagePickerPlaceholder}>
+                      <Ionicons name="image-outline" size={48} color="#A68C7B" />
+                      <Text style={styles.imagePickerText}>Tap to select image</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                {/* Title */}
+                <Text style={styles.inputLabel}>Title *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter artwork title"
+                  value={editForm.title}
+                  onChangeText={(t) => setEditForm(s => ({ ...s, title: t }))}
+                />
+
+                {/* Medium */}
+                <Text style={styles.inputLabel}>Medium *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g., Oil, Digital, Watercolor"
+                  value={editForm.medium}
+                  onChangeText={(t) => setEditForm(s => ({ ...s, medium: t }))}
+                />
+
+                {/* Description */}
+                <Text style={styles.inputLabel}>Description *</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  placeholder="Enter description"
+                  value={editForm.description}
+                  onChangeText={(t) => setEditForm(s => ({ ...s, description: t }))}
+                  multiline
+                  numberOfLines={4}
+                />
+
+                {/* Category selector like upload */}
+                <Text style={styles.inputLabel}>Category *</Text>
+                <TouchableOpacity style={styles.input} onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}>
+                  <Text style={{ color: editForm.category ? '#000' : '#999' }}>
+                    {editForm.category || 'Select category'}
+                  </Text>
+                  <Ionicons
+                    name={showCategoryDropdown ? 'chevron-up' : 'chevron-down'}
+                    size={20}
+                    color="#555"
+                    style={{ position: 'absolute', right: 12, top: 12 }}
+                  />
+                </TouchableOpacity>
+                {showCategoryDropdown && (
+                  <View style={styles.categoryDropdown}>
+                    <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+                      {categories.map((cat) => (
+                        <TouchableOpacity key={cat.field || cat.name} style={styles.categoryItem} onPress={() => {
+                          setEditForm(s => ({ ...s, category: cat.name || cat.field }));
+                          setShowCategoryDropdown(false);
+                        }}>
+                          <Text style={styles.categoryItemText}>{cat.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
+                {/* Save */}
+                <TouchableOpacity
+                  style={[styles.saveBtn, savingEdit && styles.disabledButton]}
+                  onPress={async () => {
+                    if (!artwork?.id) return;
+                    if (!editForm.title.trim() || !editForm.medium.trim() || !editForm.description.trim() || !editForm.category) {
+                      Alert.alert('Error', 'Please fill out all required fields');
+                      return;
+                    }
+                    try {
+                      setSavingEdit(true);
+                      const { at, rt } = await loadSession();
+                      // Always use FormData (mirrors Web behavior)
+                      const fd = new FormData();
+                      fd.append('title', editForm.title.trim());
+                      fd.append('medium', editForm.medium.trim());
+                      fd.append('description', editForm.description.trim());
+                      fd.append('categories', JSON.stringify([editForm.category]));
+                      // Web sends existingImages (kept) and imagesToRemove (removed)
+                      if (editImage?.uri) {
+                        // New image selected: remove all originals and upload the new one
+                        (originalImages || []).forEach((u) => fd.append('imagesToRemove', u));
+                      } else {
+                        // No new image: keep originals
+                        (originalImages || []).forEach((u) => fd.append('existingImages', u));
+                      }
+                      if (editImage?.uri) {
+                        const imageUri = Platform.OS === 'android' ? editImage.uri : editImage.uri.replace('file://','');
+                        const filename = imageUri.split('/').pop();
+                        const match = /\.([\w]+)$/.exec(filename);
+                        const type = match ? `image/${match[1]}` : 'image/jpeg';
+                        fd.append('images', { uri: imageUri, name: filename, type });
+                      }
+                      const res = await fetch(`${API_BASE}/gallery/artwork/${artwork.id}`, {
+                        method: 'PUT',
+                        headers: { 'Cookie': `access_token=${at}; refresh_token=${rt}`, 'Accept': 'application/json' },
+                        body: fd,
+                      });
+                      // Try to parse JSON, fallback to text
+                      let updated = null;
+                      let raw = null;
+                      try {
+                        updated = await res.json();
+                      } catch (_) {
+                        try { raw = await res.text(); } catch {}
+                      }
+                      if (!res.ok) {
+                        const msg = (updated && (updated.message || updated.error)) || raw || `Failed to update artwork (status ${res.status})`;
+                        throw new Error(msg);
+                      }
+                      // If server returns updated artwork, reflect immediately
+                      if (updated && (updated.artwork || updated.updatedArtwork || updated.id)) {
+                        const newArt = updated.artwork || updated.updatedArtwork || updated;
+                        setArtwork(newArt);
+                        // Prefill edit form from server result
+                        const firstCat = Array.isArray(newArt.categories) && newArt.categories.length > 0 ? newArt.categories[0] : (newArt.category || '');
+                        setEditForm({
+                          title: newArt.title || '',
+                          medium: newArt.medium || '',
+                          description: newArt.description || '',
+                          category: firstCat || ''
+                        });
+                      }
+                      // Bust image cache and refresh remote data
+                      setImageRefreshKey((k) => k + 1);
+                      Alert.alert('Success', 'Artwork updated successfully');
+                      setEditVisible(false);
+                      await Promise.all([fetchArtworkDetails(), fetchComments()]);
+                    } catch (e) {
+                      Alert.alert('Error', e?.message || 'Failed to update artwork');
+                    } finally {
+                      setSavingEdit(false);
+                    }
+                  }}
+                  disabled={savingEdit}
+                >
+                  <Text style={styles.saveBtnText}>{savingEdit ? 'Saving...' : 'Save Changes'}</Text>
+                </TouchableOpacity>
+                {/* Spacer to avoid system navbar overlap */}
+                <View style={{ height: Platform.OS === 'android' ? 24 : 8 }} />
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* Full-screen image modal */}
       <Modal
@@ -667,6 +1030,158 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  moreBtn: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 18,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  optionsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'flex-end',
+  },
+  optionsSheet: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    gap: 10,
+  },
+  optionText: {
+    fontSize: 16,
+    color: '#111',
+  },
+  optionDanger: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#eee',
+  },
+  // Edit modal styles identical to Gallery upload modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '90%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#A68C7B',
+  },
+  modalBody: {
+    padding: 20,
+  },
+  imagePicker: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#A68C7B',
+    borderStyle: 'dashed',
+    marginBottom: 20,
+    overflow: 'hidden',
+  },
+  imagePickerPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  imagePickerText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: '#A68C7B',
+  },
+  pickedImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  removeImageBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    marginBottom: 16,
+    backgroundColor: '#fff',
+  },
+  textArea: {
+    height: 100,
+    textAlignVertical: 'top',
+  },
+  categoryDropdown: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    marginTop: -8,
+    marginBottom: 16,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  categoryItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  categoryItemText: {
+    fontSize: 14,
+    color: '#333',
+  },
+  saveBtn: {
+    backgroundColor: '#A68C7B',
+    paddingVertical: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });
 
 export default ViewGalleryScreen;
